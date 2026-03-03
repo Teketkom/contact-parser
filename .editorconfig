@@ -1,0 +1,57 @@
+root = true
+
+# ─── All files ────────────────────────────────────────────────────────────────
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+# ─── Python ──────────────────────────────────────────────────────────────────
+[*.py]
+indent_size = 4
+max_line_length = 100
+
+# ─── JavaScript / TypeScript ──────────────────────────────────────────────────
+[*.{js,ts,jsx,tsx,mjs,cjs}]
+indent_size = 2
+
+# ─── JSON ─────────────────────────────────────────────────────────────────────
+[*.json]
+indent_size = 2
+
+# ─── YAML ─────────────────────────────────────────────────────────────────────
+[*.{yml,yaml}]
+indent_size = 2
+
+# ─── CSS / SCSS ───────────────────────────────────────────────────────────────
+[*.{css,scss,sass,less}]
+indent_size = 2
+
+# ─── HTML ─────────────────────────────────────────────────────────────────────
+[*.{html,htm}]
+indent_size = 2
+
+# ─── Markdown ────────────────────────────────────────────────────────────────
+[*.{md,mdx}]
+trim_trailing_whitespace = false
+max_line_length = off
+
+# ─── Shell scripts ───────────────────────────────────────────────────────────
+[*.sh]
+indent_size = 4
+end_of_line = lf
+
+# ─── Makefile ────────────────────────────────────────────────────────────────
+[Makefile]
+indent_style = tab
+
+# ─── Docker ──────────────────────────────────────────────────────────────────
+[Dockerfile*]
+indent_size = 4
+
+# ─── .env files ───────────────────────────────────────────────────────────────
+[.env*]
+indent_size = 4
