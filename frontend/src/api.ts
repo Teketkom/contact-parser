@@ -1,7 +1,6 @@
 import axios, { AxiosError } from 'axios'
 import type {
   CreateTaskResponse,
-  TaskListItem,
   TaskResult,
   TaskProgress,
   PaginatedTasks,

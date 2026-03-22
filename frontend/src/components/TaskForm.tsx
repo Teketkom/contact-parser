@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, DragEvent, ChangeEvent } from 'react'
 import {
-  Upload, FileSpreadsheet, X, ChevronDown, AlertCircle, Loader2, Play
+  Upload, FileSpreadsheet, X, AlertCircle, Loader2, Play
 } from 'lucide-react'
 import { createTask, previewFile } from '../api'
 import type { TaskMode, UploadFileInfo } from '../types'
@@ -9,14 +9,6 @@ interface TaskFormProps {
   onTaskCreated: (taskId: string) => void
 }
 
-const ACCEPTED_TYPES = [
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.ms-excel',
-  'text/csv',
-  '.xlsx',
-  '.xls',
-  '.csv',
-]
 
 const formatBytes = (bytes: number) => {
   if (bytes < 1024) return `${bytes} Б`
