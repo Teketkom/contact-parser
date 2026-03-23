@@ -89,33 +89,35 @@ export default function TaskResults({ taskId }: TaskResultsProps) {
 
   return (
     <div className="space-y-5 animate-fade-in">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold text-slate-900">Результаты</h1>
-          <p className="text-slate-400 text-xs font-mono mt-0.5">{taskId}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {task.log_file && (
-            <button
-              onClick={handleDownloadLogs}
-              disabled={downloadingLogs}
-              className="flex items-center gap-2 px-3 py-2 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-            >
-              <FileText className="w-4 h-4" />
-              {downloadingLogs ? 'Загрузка...' : 'Логи'}
-            </button>
-          )}
-          <button
-            onClick={handleDownload}
-            disabled={downloading || !task.result_file}
-            className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:bg-slate-200 text-white disabled:text-slate-400 rounded-lg text-sm font-semibold transition-colors disabled:cursor-not-allowed"
-          >
-            <Download className="w-4 h-4" />
-            {downloading ? 'Загрузка...' : 'Скачать Excel'}
-          </button>
-        </div>
+      {/* Заголовок */}
+      <div>
+        <h1 className="text-2xl font-semibold text-slate-900">Результаты</h1>
+        <p className="text-slate-400 text-xs font-mono mt-0.5">{taskId}</p>
       </div>
 
+      {/* ★ ГЛАВНАЯ КНОПКА СКАЧИВАНИЯ — крупная, на всю ширину */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <button
+          onClick={handleDownload}
+          disabled={downloading || !task.result_file}
+          className="flex-1 flex items-center justify-center gap-3 px-6 py-4 bg-green-600 hover:bg-green-700 disabled:bg-slate-200 text-white disabled:text-slate-400 rounded-xl text-base font-bold transition-colors disabled:cursor-not-allowed shadow-lg hover:shadow-xl"
+        >
+          <Download className="w-6 h-6" />
+          {downloading ? 'Загрузка файла...' : 'Скачать результат в Excel'}
+        </button>
+        {task.log_file && (
+          <button
+            onClick={handleDownloadLogs}
+            disabled={downloadingLogs}
+            className="flex items-center justify-center gap-2 px-5 py-4 border-2 border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl text-sm font-medium transition-colors disabled:opacity-50"
+          >
+            <FileText className="w-5 h-5" />
+            {downloadingLogs ? 'Загрузка...' : 'Скачать логи'}
+          </button>
+        )}
+      </div>
+
+      {/* Статистика */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div className="card p-4">
           <div className="flex items-center gap-2 text-slate-400 text-xs mb-1.5">
@@ -152,6 +154,7 @@ export default function TaskResults({ taskId }: TaskResultsProps) {
         </div>
       </div>
 
+      {/* Предпросмотр записей */}
       {preview.length > 0 ? (
         <div className="card overflow-hidden">
           <div className="p-4 border-b border-slate-100 flex items-center justify-between">
@@ -240,6 +243,19 @@ export default function TaskResults({ taskId }: TaskResultsProps) {
         </div>
       )}
 
+      {/* ★ ПОВТОРНАЯ КНОПКА СКАЧИВАНИЯ ВНИЗУ */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <button
+          onClick={handleDownload}
+          disabled={downloading || !task.result_file}
+          className="flex-1 flex items-center justify-center gap-3 px-6 py-4 bg-green-600 hover:bg-green-700 disabled:bg-slate-200 text-white disabled:text-slate-400 rounded-xl text-base font-bold transition-colors disabled:cursor-not-allowed shadow-lg hover:shadow-xl"
+        >
+          <Download className="w-6 h-6" />
+          {downloading ? 'Загрузка файла...' : 'Скачать результат в Excel'}
+        </button>
+      </div>
+
+      {/* Навигация */}
       <div className="flex items-center gap-3 pt-2">
         <button
           onClick={() => navigate('/')}
