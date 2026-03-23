@@ -488,6 +488,97 @@ async def download_logs(task_id: str) -> FileResponse:
     )
 
 
+
+# ── Предпросмотр записей ──────────────────────────────────────────────────────────
+
+@router.get(
+    "/tasks/{task_id}/records",
+    summary="Предпросмотр записей контактов",
+    tags=["Результаты"],
+)
+async def get_task_records(
+    task_id: str,
+    limit: int = Query(20, ge=1, le=200, description="Максимум записей"),
+    offset: int = Query(0, ge=0, description="Смещение"),
+) -> list[dict]:
+    """
+    Возвращает записи контактов из результатов парсинга для предпросмотра в UI.
+    Читает данные из сохранённого Excel-файла.
+    """
+    task = task_manager.tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Задача {task_id} не найдена")
+
+    if task.status != TaskStatus.COMPLETED or not task.result_file:
+        return []
+
+    result_path = Path(task.result_file)
+    if not result_path.exists():
+        return []
+
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(str(result_path), read_only=True)
+        ws = wb["Контакты"]
+
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            wb.close()
+            return []
+
+        headers = [str(h).strip() if h else "" for h in rows[0]]
+        records = []
+
+        header_map = {
+            "Название компании": "company_name",
+            "Сайт": "site_url",
+            "Общий email": "company_email",
+            "Должность (как на сайте)": "position_raw",
+            "Должность (нормализованная)": "position_normalized",
+            "Должность (норм.)": "position_normalized",
+            "ФИО": "full_name",
+            "Личный email": "personal_email",
+            "Телефон": "phone",
+            "ИНН": "inn",
+            "КПП": "kpp",
+            "ВКонтакте": "social_vk",
+            "Telegram": "social_telegram",
+            "LinkedIn": "social_linkedin",
+            "Соцсети (прочие)": "social_other",
+            "URL страницы-источника": "source_url",
+            "URL-источник": "source_url",
+            "Язык страницы": "page_language",
+            "Дата сканирования": "scan_date",
+            "Вариант извлечения": "extraction_variant",
+            "Вариант": "extraction_variant",
+            "Статус обработки": "status",
+            "Статус": "status",
+            "Комментарий": "comment",
+        }
+
+        col_mapping: list[tuple[int, str]] = []
+        for i, h in enumerate(headers):
+            key = header_map.get(h)
+            if key:
+                col_mapping.append((i, key))
+
+        data_rows = rows[1 + offset : 1 + offset + limit]
+
+        for row in data_rows:
+            record = {}
+            for col_idx, key in col_mapping:
+                val = row[col_idx] if col_idx < len(row) else None
+                record[key] = str(val) if val is not None else None
+            records.append(record)
+
+        wb.close()
+        return records
+
+    except Exception as exc:
+        logger.warning("Ошибка чтения записей из %s: %s", result_path, exc)
+        return []
+
+
 # ── Чёрный список ──────────────────────────────────────────────────────────────────
 
 @router.post(

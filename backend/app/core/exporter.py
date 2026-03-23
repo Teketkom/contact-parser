@@ -1,6 +1,13 @@
 """
 Модуль экспорта результатов парсинга в Excel (XLSX).
 Создаёт файл с автофильтрами, форматированием, итоговым листом статистики.
+
+Соответствует требованиям ТЗ:
+- FR-OUT-001: столбцы Excel
+- FR-OUT-002: автофильтр
+- FR-OUT-003: формат папки Результаты_парсинга/ГГГГ-ММ-ДД_ЧЧ-ММ/
+- FR-OUT-004: summary (лист Статистика)
+- FR-FLB-003: колонка «Комментарий» с пометкой fallback
 """
 
 from __future__ import annotations
@@ -25,29 +32,34 @@ from app.models import ContactRecord, ParseTask, SocialLinks
 
 logger = logging.getLogger(__name__)
 
-# ── Определение колонок ────────────────────────────────────────────────────────────
+# ── Определение колонок (согласно ТЗ FR-OUT-001) ──────────────────────────────────
+# Минимум по ТЗ: Название компании, Сайт, Общий email,
+# Должность (как на сайте), Должность (нормализованная), ФИО,
+# Личный email, Телефон, ИНН, КПП,
+# URL страницы-источника, Язык страницы, Дата сканирования, Статус обработки
+# Дополнительно: соцсети (FR-EXT-012), вариант извлечения, комментарий (FR-FLB-003)
 
 COLUMNS: list[dict[str, Any]] = [
-    {"key": "company_name",         "header": "Название компании",        "width": 30},
-    {"key": "site_url",             "header": "Сайт",                     "width": 35},
-    {"key": "company_email",        "header": "Общий email",              "width": 30},
-    {"key": "position_raw",         "header": "Должность (как на сайте)", "width": 35},
-    {"key": "position_normalized",  "header": "Должность (норм.)",        "width": 30},
-    {"key": "full_name",            "header": "ФИО",                      "width": 28},
-    {"key": "personal_email",       "header": "Личный email",             "width": 30},
-    {"key": "phone",                "header": "Телефон",                  "width": 18},
-    {"key": "inn",                  "header": "ИНН",                      "width": 14},
-    {"key": "kpp",                  "header": "КПП",                      "width": 12},
-    {"key": "social_vk",            "header": "ВКонтакте",                "width": 30},
-    {"key": "social_telegram",      "header": "Telegram",                 "width": 25},
-    {"key": "social_linkedin",      "header": "LinkedIn",                 "width": 30},
-    {"key": "social_other",         "header": "Соцсети (прочие)",         "width": 30},
-    {"key": "source_url",           "header": "URL-источник",             "width": 40},
-    {"key": "page_language",        "header": "Язык страницы",            "width": 12},
-    {"key": "scan_date",            "header": "Дата сканирования",        "width": 20},
-    {"key": "extraction_variant",   "header": "Вариант",                  "width": 10},
-    {"key": "status",               "header": "Статус",                   "width": 12},
-    {"key": "comment",              "header": "Комментарий",              "width": 40},
+    {"key": "company_name",         "header": "Название компании",              "width": 30},
+    {"key": "site_url",             "header": "Сайт",                           "width": 35},
+    {"key": "company_email",        "header": "Общий email",                    "width": 30},
+    {"key": "position_raw",         "header": "Должность (как на сайте)",       "width": 35},
+    {"key": "position_normalized",  "header": "Должность (нормализованная)",    "width": 30},
+    {"key": "full_name",            "header": "ФИО",                            "width": 28},
+    {"key": "personal_email",       "header": "Личный email",                   "width": 30},
+    {"key": "phone",                "header": "Телефон",                        "width": 18},
+    {"key": "inn",                  "header": "ИНН",                            "width": 14},
+    {"key": "kpp",                  "header": "КПП",                            "width": 12},
+    {"key": "social_vk",            "header": "ВКонтакте",                      "width": 30},
+    {"key": "social_telegram",      "header": "Telegram",                       "width": 25},
+    {"key": "social_linkedin",      "header": "LinkedIn",                       "width": 30},
+    {"key": "social_other",         "header": "Соцсети (прочие)",               "width": 30},
+    {"key": "source_url",           "header": "URL страницы-источника",         "width": 40},
+    {"key": "page_language",        "header": "Язык страницы",                  "width": 12},
+    {"key": "scan_date",            "header": "Дата сканирования",              "width": 20},
+    {"key": "extraction_variant",   "header": "Вариант извлечения",             "width": 14},
+    {"key": "status",               "header": "Статус обработки",               "width": 14},
+    {"key": "comment",              "header": "Комментарий",                    "width": 40},
 ]
 
 # ── Цвета темы ────────────────────────────────────────────────────────────────────
@@ -77,6 +89,7 @@ def _cell_border() -> Border:
 class ExcelExporter:
     """
     Экспортирует результаты парсинга в Excel-файл с форматированием.
+    Соответствует требованиям ТЗ FR-OUT-001..FR-OUT-005.
     """
 
     async def export(
@@ -103,7 +116,7 @@ class ExcelExporter:
         ws_contacts.title = "Контакты"
         self._build_contacts_sheet(ws_contacts, results)
 
-        # Лист 2: Статистика
+        # Лист 2: Статистика (FR-OUT-004)
         ws_stats = wb.create_sheet("Статистика")
         self._build_stats_sheet(ws_stats, results, task)
 
@@ -180,6 +193,7 @@ class ExcelExporter:
 
                 row_idx += 1
 
+        # Ширина столбцов
         for i, col_def in enumerate(COLUMNS, 1):
             col_letter = get_column_letter(i)
             ws.column_dimensions[col_letter].width = col_def["width"]
@@ -187,12 +201,15 @@ class ExcelExporter:
         for row in range(2, row_idx):
             ws.row_dimensions[row].height = 20
 
+        # Закрепить заголовки (FR-OUT-002)
         ws.freeze_panes = "A2"
 
+        # Автофильтр (FR-OUT-002)
         if row_idx > 2:
             last_col = get_column_letter(len(COLUMNS))
             ws.auto_filter.ref = f"A1:{last_col}{row_idx - 1}"
 
+        # Таблица Excel с полосатыми строками
         if row_idx > 2:
             table = Table(
                 displayName="Контакты",
@@ -214,7 +231,7 @@ class ExcelExporter:
         results: list[dict[str, Any]],
         task: ParseTask,
     ) -> None:
-        """Заполняет лист «Статистика»."""
+        """Заполняет лист «Статистика» (FR-OUT-004)."""
         fill_header = PatternFill("solid", fgColor=COLOR_HEADER_BG)
         fill_value  = PatternFill("solid", fgColor=COLOR_SUMMARY_BG)
 
@@ -241,7 +258,7 @@ class ExcelExporter:
         ws.column_dimensions["A"].width = 35
         ws.column_dimensions["B"].width = 30
 
-        add_header("📊 Итоги парсинга")
+        add_header("Итоги парсинга")
 
         total_contacts = sum(len(r.get("contacts", [])) for r in results)
         total_sites = len(results)
@@ -268,7 +285,7 @@ class ExcelExporter:
             add_row("Переключений на Вариант A", task.progress.fallback_count)
 
         ws.append([])
-        add_header("📋 Результаты по сайтам")
+        add_header("Результаты по сайтам")
         ws.append(["Сайт", "Контактов найдено"])
         header_row = ws.max_row
         for cell in ws[header_row]:
@@ -282,7 +299,7 @@ class ExcelExporter:
             ])
 
         ws.append([])
-        add_header("👥 Топ должностей")
+        add_header("Топ должностей")
         ws.append(["Должность", "Количество"])
         ws.cell(ws.max_row, 1).font = Font(name="Calibri", size=10, bold=True, color=COLOR_HEADER_FONT)
         ws.cell(ws.max_row, 2).font = Font(name="Calibri", size=10, bold=True, color=COLOR_HEADER_FONT)

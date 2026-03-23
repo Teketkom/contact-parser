@@ -150,7 +150,7 @@ class TaskManager:
         start_time = time.monotonic()
         self._save_state()
 
-        result_dir = settings.RESULTS_DIR / datetime.utcnow().strftime("%Y-%m-%d_%H-%M")
+        result_dir = settings.RESULTS_DIR / datetime.utcnow().strftime("Результаты_парсинга/%Y-%m-%d_%H-%M")
         result_dir.mkdir(parents=True, exist_ok=True)
 
         log_file = result_dir / f"errors_{task_id[:8]}.txt"
