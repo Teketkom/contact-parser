@@ -3,7 +3,6 @@ import type {
   TaskResponse,
   BlacklistUploadResponse,
   UploadFileInfo,
-  TaskMode,
   ApiError,
 } from './types'
 
@@ -32,19 +31,13 @@ api.interceptors.response.use(
 
 /**
  * Create a new parsing task.
- * Uploads the sites file and optional params.
+ * Always uses mode=2 (all positions) and variant=B (AI / Perplexity).
  */
-export async function createTask(
-  file: File,
-  mode: TaskMode,
-  targetPositions?: string[]
-): Promise<TaskResponse> {
+export async function createTask(file: File): Promise<TaskResponse> {
   const form = new FormData()
   form.append('file', file)
-  form.append('mode', String(mode))
-  if (targetPositions && targetPositions.length > 0) {
-    form.append('target_positions', targetPositions.join(','))
-  }
+  form.append('mode', '2')
+  form.append('variant', 'B')
   const { data } = await api.post<TaskResponse>('/tasks', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })

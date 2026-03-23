@@ -1,8 +1,12 @@
 """
 Абстракция LLM-клиента для извлечения контактных данных.
-Поддерживает провайдеры: OpenAI, GigaChat, Qwen.
-Отслеживает бюджет токенов, логирует промпты и ответы,
-автоматически сигнализирует о необходимости переключения на резервный вариант.
+Основной провайдер: Perplexity API (OpenAI-совместимый, модель sonar).
+Также поддерживает: OpenAI, GigaChat, Qwen.
+
+Ключевые отличия Perplexity от OpenAI:
+- НЕ поддерживает response_format={"type": "json_object"}
+- Вместо этого используем строгий system prompt с требованием вернуть только JSON
+- Парсим JSON из ответа с fallback на regex-извлечение
 """
 
 from __future__ import annotations
@@ -10,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -19,42 +24,52 @@ from app.models import FallbackReason
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT = """Ты — специализированный парсер контактных данных с веб-страниц компаний.
-Твоя задача — извлечь из предоставленного HTML/текста структурированные контактные данные.
+# ── Системный промпт для Perplexity ─────────────────────────────────────────
 
-Правила:
-1. Возвращай ТОЛЬКО валидный JSON и ничего более.
-2. Не придумывай данные — только то, что явно присутствует в тексте.
-3. Телефоны нормализуй в международный формат +7XXXXXXXXXX для России.
-4. ФИО возвращай в формате "Фамилия Имя Отчество".
-5. Если поле не найдено — используй null.
-6. ИНН — 10 или 12 цифр, КПП — 9 цифр.
+_SYSTEM_PROMPT = """Ты — специализированный извлекатель контактных данных сотрудников компаний с веб-страниц.
 
-Формат ответа:
+СТРОГИЕ ПРАВИЛА:
+1. Извлекай ТОЛЬКО реальных сотрудников данной конкретной компании
+2. НИКОГДА не включай политиков (Путин, Медведев, Мишустин и т.д.), знаменитостей, авторов новостей, журналистов или людей упомянутых в новостях/статьях
+3. Должность — ТОЛЬКО реальная должность в компании (Директор, Менеджер, Инженер, Бухгалтер и т.д.). Если текст после имени содержит телефон, email, адрес, дату — это НЕ должность
+4. Если не уверен что человек работает в этой компании — НЕ включай его
+5. ФИО для русских — строго Фамилия Имя Отчество. Для иностранцев — First Last
+6. Различай личные и общие email:
+   - Общие (НЕ личные): info@, support@, help@, admin@, office@, pr@, secretary@, reception@, contact@, mail@, noreply@, sales@, marketing@, press@, media@, feedback@, webmaster@, postmaster@, hello@, general@, service@, team@, hr@, legal@, billing@, finance@, it@, tech@, dev@, api@
+   - Личные: содержат имя/фамилию человека (ivanov@, a.petrov@, sidorova.m@)
+7. Телефон нормализуй в формат +7XXXXXXXXXX для России
+8. Если должность не найдена или сомнительна — поставь null, НЕ выдумывай
+9. Для каждого контакта укажи тип роли: "Топ-менеджмент", "Средний менеджмент", "Специалист"
+10. НЕ включай людей, упомянутых только в контексте новостей, пресс-релизов, интервью СМИ
+
+Верни ТОЛЬКО валидный JSON (без markdown, без ```, без пояснений до или после):
 {
-  "company_name": "...",
-  "inn": "...",
-  "kpp": "...",
-  "company_email": "...",
+  "company_name": "название компании или null",
+  "inn": "ИНН 10 или 12 цифр или null",
+  "kpp": "КПП 9 цифр или null",
+  "company_emails": ["info@...", "support@..."],
   "contacts": [
     {
-      "full_name": "...",
-      "position_raw": "...",
-      "personal_email": "...",
-      "phone": "...",
-      "social_links": {
-        "vk": null, "telegram": null, "linkedin": null,
-        "facebook": null, "instagram": null, "twitter": null
-      }
+      "full_name": "Фамилия Имя Отчество",
+      "position_raw": "должность как на сайте или null",
+      "position_normalized": "нормализованная должность или null",
+      "personal_email": "personal@email или null",
+      "phone": "+7XXXXXXXXXX или null",
+      "role_type": "Топ-менеджмент",
+      "social_links": {"vk": null, "telegram": null, "linkedin": null}
     }
   ]
 }"""
 
-_USER_PROMPT_TEMPLATE = """Извлеки контактные данные из следующего текста страницы {url}:
+_USER_PROMPT_TEMPLATE = """Компания: {company_name}
+URL страницы: {url}
 
-{text}
+Извлеки контактные данные сотрудников ТОЛЬКО этой компании из текста ниже.
+Помни: должность — это ТОЛЬКО название позиции (Директор, Менеджер и т.д.), а НЕ телефон, email или адрес.
+{position_hint}
 
-{position_hint}"""
+Текст страницы:
+{text}"""
 
 
 @dataclass
@@ -109,7 +124,7 @@ class LLMTimeoutError(LLMClientError):
 
 
 class LLMHTTPError(LLMClientError):
-    """ХТТП-ошибка при запросе к LLM."""
+    """HTTP-ошибка при запросе к LLM."""
 
     def __init__(self, message: str, status_code: int = 0):
         super().__init__(message, FallbackReason.LLM_HTTP_ERROR)
@@ -137,6 +152,76 @@ class BaseLLMProvider:
         temperature: float = 0.0,
     ) -> LLMResponse:
         raise NotImplementedError
+
+
+class PerplexityProvider(BaseLLMProvider):
+    """
+    Провайдер Perplexity API (OpenAI-совместимый).
+    Использует модель sonar.
+    НЕ использует response_format — Perplexity его не поддерживает.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "sonar",
+        base_url: str = "https://api.perplexity.ai",
+    ) -> None:
+        try:
+            from openai import AsyncOpenAI
+        except ImportError:
+            raise RuntimeError("Установите пакет: pip install openai")
+
+        self._client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=settings.LLM_TIMEOUT,
+        )
+        self.model = model
+
+    async def complete(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+        temperature: float = 0.0,
+    ) -> LLMResponse:
+        start = time.monotonic()
+        try:
+            response = await self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=max_tokens,
+                temperature=temperature,
+                # НЕ используем response_format — Perplexity не поддерживает
+            )
+        except Exception as exc:
+            exc_class = type(exc).__name__
+            if "timeout" in exc_class.lower() or "Timeout" in str(exc):
+                raise LLMTimeoutError(f"Perplexity тайм-аут: {exc}")
+            elif "RateLimit" in exc_class or "429" in str(exc):
+                raise LLMHTTPError(f"Perplexity rate limit: {exc}", status_code=429)
+            elif "Authentication" in exc_class or "401" in str(exc):
+                raise LLMHTTPError(f"Perplexity ошибка авторизации: {exc}", status_code=401)
+            else:
+                raise LLMClientError(f"Perplexity ошибка: {exc}")
+
+        latency = (time.monotonic() - start) * 1000
+        choice = response.choices[0]
+        usage = response.usage
+
+        return LLMResponse(
+            content=choice.message.content or "",
+            tokens_prompt=usage.prompt_tokens if usage else 0,
+            tokens_completion=usage.completion_tokens if usage else 0,
+            model=response.model,
+            provider="perplexity",
+            latency_ms=latency,
+            raw_response=response,
+        )
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -353,10 +438,44 @@ class QwenProvider(BaseLLMProvider):
         )
 
 
+def _extract_json_from_text(text: str) -> dict:
+    """
+    Извлекает JSON из текста ответа LLM.
+    Perplexity может обернуть JSON в markdown-блоки или добавить пояснения.
+    """
+    # Попытка 1: прямой парсинг
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            pass
+
+    # Попытка 2: убрать markdown-обёртку ```json ... ```
+    md_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if md_match:
+        try:
+            return json.loads(md_match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # Попытка 3: найти первый JSON-объект в тексте
+    brace_match = re.search(r"\{.*\}", text, re.DOTALL)
+    if brace_match:
+        candidate = brace_match.group()
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"Не удалось извлечь JSON из ответа LLM (длина={len(text)})")
+
+
 class LLMClient:
     """
     Высокоуровневый клиент для взаимодействия с LLM.
     Управляет бюджетом токенов, логирует вызовы, предоставляет fallback-сигналы.
+    По умолчанию использует Perplexity API.
     """
 
     def __init__(self) -> None:
@@ -379,8 +498,20 @@ class LLMClient:
             return
 
         try:
-            if provider == "openai":
-                self._provider = OpenAIProvider(api_key=api_key, model=model)
+            if provider == "perplexity":
+                base_url = getattr(settings, "LLM_BASE_URL", "https://api.perplexity.ai")
+                self._provider = PerplexityProvider(
+                    api_key=api_key,
+                    model=model,
+                    base_url=base_url,
+                )
+            elif provider == "openai":
+                base_url = getattr(settings, "LLM_BASE_URL", None)
+                self._provider = OpenAIProvider(
+                    api_key=api_key,
+                    model=model,
+                    base_url=base_url if base_url != "https://api.perplexity.ai" else None,
+                )
             elif provider == "gigachat":
                 self._provider = GigaChatProvider(credentials=api_key, model=model)
             elif provider == "qwen":
@@ -405,6 +536,7 @@ class LLMClient:
         self,
         text: str,
         page_url: str,
+        company_name: Optional[str] = None,
         target_positions: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """
@@ -432,6 +564,7 @@ class LLMClient:
             position_hint = f"\nЦелевые должности для поиска: {positions_str}"
 
         user_prompt = _USER_PROMPT_TEMPLATE.format(
+            company_name=company_name or "неизвестна",
             url=page_url,
             text=truncated_text,
             position_hint=position_hint,
@@ -486,19 +619,13 @@ class LLMClient:
                 self._budget.limit,
             )
 
+        # Парсим JSON из ответа (Perplexity не гарантирует чистый JSON)
         try:
-            result = json.loads(response.content)
+            result = _extract_json_from_text(response.content)
             if not isinstance(result, dict):
                 raise ValueError("LLM вернул не объект")
             return result
-        except json.JSONDecodeError as exc:
-            import re
-            json_match = re.search(r"\{.*\}", response.content, re.DOTALL)
-            if json_match:
-                try:
-                    return json.loads(json_match.group())
-                except json.JSONDecodeError:
-                    pass
+        except (json.JSONDecodeError, ValueError) as exc:
             raise LLMClientError(f"LLM вернул невалидный JSON: {exc}")
 
     def get_budget_status(self) -> dict[str, Any]:

@@ -285,7 +285,7 @@ async def preview_upload(
 async def create_task(
     background_tasks: BackgroundTasks,
     mode: int = Form(..., description="Режим парсинга: 1, 2 или 3"),
-    variant: str = Form(default="A", description="Вариант извлечения: A (классический) или B (AI)"),
+    variant: str = Form(default="B", description="Вариант извлечения: A (классический) или B (AI)"),
     target_positions: str = Form(
         default="",
         description="Целевые должности через запятую (для режима 1)",
@@ -307,10 +307,8 @@ async def create_task(
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Неверный режим парсинга: {mode}")
 
-    try:
-        extract_variant = ExtractionVariant(variant.upper())
-    except ValueError:
-        raise HTTPException(status_code=422, detail=f"Неверный вариант извлечения: {variant}")
+    # Принудительно Вариант B (AI / Perplexity) — игнорируем параметр variant
+    extract_variant = ExtractionVariant.AI
 
     positions = [p.strip() for p in target_positions.split(",") if p.strip()]
     if parse_mode == ParseMode.SITES_WITH_TARGET_POSITIONS and not positions:

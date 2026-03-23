@@ -1,6 +1,6 @@
 // TypeScript interfaces matching backend Pydantic models
 
-export type TaskMode = 1 | 2 | 3
+export type TaskMode = number
 
 export type TaskStatus =
   | 'pending'

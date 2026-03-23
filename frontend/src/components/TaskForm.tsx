@@ -1,9 +1,9 @@
 import { useState, useRef, useCallback, DragEvent, ChangeEvent } from 'react'
 import {
-  Upload, FileSpreadsheet, X, AlertCircle, Loader2, Play
+  Upload, FileSpreadsheet, X, AlertCircle, Loader2, Play, Sparkles
 } from 'lucide-react'
 import { createTask, previewFile } from '../api'
-import type { TaskMode, UploadFileInfo } from '../types'
+import type { UploadFileInfo } from '../types'
 
 interface TaskFormProps {
   onTaskCreated: (taskId: string) => void
@@ -17,12 +17,10 @@ const formatBytes = (bytes: number) => {
 }
 
 export default function TaskForm({ onTaskCreated }: TaskFormProps) {
-  const [mode, setMode] = useState<TaskMode>(1)
   const [file, setFile] = useState<File | null>(null)
   const [fileInfo, setFileInfo] = useState<UploadFileInfo | null>(null)
   const [filePreviewLoading, setFilePreviewLoading] = useState(false)
   const [fileError, setFileError] = useState<string | null>(null)
-  const [positions, setPositions] = useState('')
   const [isDragging, setIsDragging] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -90,17 +88,10 @@ export default function TaskForm({ onTaskCreated }: TaskFormProps) {
       setSubmitError('Пожалуйста, загрузите файл со списком сайтов')
       return
     }
-    if (mode === 1 && !positions.trim()) {
-      setSubmitError('Для режима 1 необходимо указать целевые должности')
-      return
-    }
     setSubmitError(null)
     setIsSubmitting(true)
     try {
-      const targetPositions = mode === 1
-        ? positions.split(',').map(p => p.trim()).filter(Boolean)
-        : undefined
-      const res = await createTask(file, mode, targetPositions)
+      const res = await createTask(file)
       onTaskCreated(res.task_id)
     } catch (err) {
       setSubmitError((err as Error).message)
@@ -110,47 +101,6 @@ export default function TaskForm({ onTaskCreated }: TaskFormProps) {
 
   return (
     <div className="space-y-5">
-      {/* Mode selector */}
-      <div className="card p-5">
-        <label className="block text-sm font-semibold text-slate-700 mb-3">
-          Режим работы
-        </label>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {([1, 2] as TaskMode[]).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => setMode(m)}
-              className={`relative p-4 rounded-xl border-2 text-left transition-all ${
-                mode === m
-                  ? 'border-primary-600 bg-primary-50'
-                  : 'border-slate-200 bg-white hover:border-slate-300'
-              }`}
-            >
-              <div className="flex items-start gap-3">
-                <div className={`w-4 h-4 mt-0.5 rounded-full border-2 flex-shrink-0 flex items-center justify-center transition-colors ${
-                  mode === m ? 'border-primary-600' : 'border-slate-300'
-                }`}>
-                  {mode === m && (
-                    <div className="w-2 h-2 rounded-full bg-primary-600" />
-                  )}
-                </div>
-                <div>
-                  <p className={`font-semibold text-sm ${mode === m ? 'text-primary-700' : 'text-slate-700'}`}>
-                    Режим {m}
-                  </p>
-                  <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
-                    {m === 1
-                      ? 'Список сайтов + целевые должности — извлекать только нужные позиции'
-                      : 'Список сайтов + все должности — извлекать всех найденных сотрудников'}
-                  </p>
-                </div>
-              </div>
-            </button>
-          ))}
-        </div>
-      </div>
-
       {/* File upload */}
       <div className="card p-5">
         <label className="block text-sm font-semibold text-slate-700 mb-3">
@@ -239,34 +189,16 @@ export default function TaskForm({ onTaskCreated }: TaskFormProps) {
         )}
       </div>
 
-      {/* Target positions */}
-      {mode === 1 && (
-        <div className="card p-5 animate-slide-up">
-          <label className="block text-sm font-semibold text-slate-700 mb-1.5" htmlFor="positions">
-            Целевые должности
-          </label>
-          <p className="text-xs text-slate-400 mb-3">
-            Введите должности через запятую. Используется нечёткое сопоставление.
+      {/* AI info banner */}
+      <div className="flex items-start gap-3 p-4 bg-blue-50 border border-blue-200 rounded-xl">
+        <Sparkles className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
+        <div>
+          <p className="text-sm font-medium text-blue-800">Извлечение с помощью ИИ</p>
+          <p className="text-xs text-blue-600 mt-0.5">
+            Система автоматически извлечёт всех сотрудников с указанных сайтов используя ИИ
           </p>
-          <textarea
-            id="positions"
-            value={positions}
-            onChange={(e) => setPositions(e.target.value)}
-            rows={3}
-            placeholder="Директор, Генеральный директор, CEO, Руководитель, Начальник отдела"
-            className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm text-slate-700 bg-white placeholder:text-slate-300 focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-400 resize-none transition-colors"
-          />
-          {positions && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {positions.split(',').map(p => p.trim()).filter(Boolean).map((p, i) => (
-                <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 bg-primary-50 text-primary-700 text-xs rounded-full border border-primary-100">
-                  {p}
-                </span>
-              ))}
-            </div>
-          )}
         </div>
-      )}
+      </div>
 
       {/* Submit error */}
       {submitError && (
@@ -282,8 +214,8 @@ export default function TaskForm({ onTaskCreated }: TaskFormProps) {
         onClick={handleSubmit}
         disabled={isSubmitting || !file}
         className="
-          w-full flex items-center justify-center gap-2 px-5 py-3 
-          bg-primary-600 hover:bg-primary-700 disabled:bg-slate-200 disabled:cursor-not-allowed
+          w-full flex items-center justify-center gap-2 px-5 py-3
+          bg-green-600 hover:bg-green-700 disabled:bg-slate-200 disabled:cursor-not-allowed
           text-white disabled:text-slate-400 font-semibold text-sm rounded-xl
           transition-all shadow-sm hover:shadow-md disabled:shadow-none
         "

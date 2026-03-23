@@ -1,6 +1,7 @@
 """
 Модуль конфигурации приложения.
 Загружает параметры из переменных окружения и .env файла.
+Настроен для работы с Perplexity API (Вариант B / AI mode).
 """
 
 from __future__ import annotations
@@ -22,33 +23,37 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # ── LLM ──────────────────────────────────────────────────────────────────────
+    # ── LLM (Perplexity API) ─────────────────────────────────────────────────
     LLM_PROVIDER: str = Field(
-        default="openai",
-        description="Провайдер LLM: openai | gigachat | qwen",
+        default="perplexity",
+        description="Провайдер LLM: perplexity | openai | gigachat | qwen",
     )
     LLM_API_KEY: Optional[str] = Field(
         default=None,
         description="API-ключ для выбранного провайдера LLM",
     )
     LLM_MODEL: str = Field(
-        default="gpt-4o-mini",
+        default="sonar",
         description="Название модели для вызовов LLM",
     )
+    LLM_BASE_URL: str = Field(
+        default="https://api.perplexity.ai",
+        description="Базовый URL для OpenAI-совместимого API",
+    )
     LLM_TIMEOUT: float = Field(
-        default=10.0,
+        default=30.0,
         description="Тайм-аут запроса к LLM (секунды)",
     )
     LLM_MAX_TOKENS_PER_REQUEST: int = Field(
-        default=2048,
+        default=4096,
         description="Максимум токенов на один запрос к LLM",
     )
     LLM_SESSION_TOKEN_BUDGET: int = Field(
-        default=200_000,
+        default=1_000_000,
         description="Суммарный бюджет токенов на сессию парсинга",
     )
 
-    # ── GigaChat specific ────────────────────────────────────────────────────────────
+    # ── GigaChat specific ────────────────────────────────────────────────────
     GIGACHAT_SCOPE: str = Field(
         default="GIGACHAT_API_PERS",
         description="Область видимости GigaChat API",
@@ -58,9 +63,9 @@ class Settings(BaseSettings):
         description="Проверять SSL-сертификат GigaChat",
     )
 
-    # ── Crawler ────────────────────────────────────────────────────────────────────
+    # ── Crawler ──────────────────────────────────────────────────────────────
     MAX_CONCURRENT_BROWSERS: int = Field(
-        default=3,
+        default=5,
         ge=1,
         le=20,
         description="Максимальное число одновременных браузерных контекстов",
@@ -100,7 +105,7 @@ class Settings(BaseSettings):
         description="Запускать браузер в headless-режиме",
     )
 
-    # ── Storage ────────────────────────────────────────────────────────────────────
+    # ── Storage ──────────────────────────────────────────────────────────────
     RESULTS_DIR: Path = Field(
         default=Path("Результаты_парсинга"),
         description="Корневая директория для сохранения результатов",
@@ -110,7 +115,7 @@ class Settings(BaseSettings):
         description="Файл хранения состояния задач для восстановления после перезапуска",
     )
 
-    # ── API ────────────────────────────────────────────────────────────────────────
+    # ── API ───────────────────────────────────────────────────────────────────
     API_HOST: str = Field(default="0.0.0.0", description="Хост FastAPI-сервера")
     API_PORT: int = Field(default=8000, description="Порт FastAPI-сервера")
     DEBUG: bool = Field(default=False, description="Режим отладки")
@@ -119,7 +124,7 @@ class Settings(BaseSettings):
         description="Список разрешённых CORS-источников",
     )
 
-    # ── Logging ────────────────────────────────────────────────────────────────────
+    # ── Logging ──────────────────────────────────────────────────────────────
     LOG_LEVEL: str = Field(default="INFO", description="Уровень логирования")
     LOG_FORMAT: str = Field(
         default="text",

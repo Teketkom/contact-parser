@@ -2,9 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Clock, CheckCircle2, XCircle, Loader2, AlertCircle,
-  RefreshCw, Trash2, Play, Eye
+  RefreshCw, Trash2, Play, Eye, Download
 } from 'lucide-react'
-import { listTasks, deleteTask } from '../api'
+import { listTasks, deleteTask, downloadResults } from '../api'
 import type { TaskResponse, TaskStatus } from '../types'
 
 const statusLabel: Record<TaskStatus, string> = {
@@ -58,6 +58,7 @@ export default function TaskList() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [downloadingId, setDownloadingId] = useState<string | null>(null)
   const navigate = useNavigate()
 
   const load = useCallback(async () => {
@@ -90,6 +91,15 @@ export default function TaskList() {
       setTasks(prev => prev.filter(t => t.task_id !== taskId))
     } catch { /* ignore */ }
     finally { setDeletingId(null) }
+  }
+
+  const handleDownload = async (taskId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setDownloadingId(taskId)
+    try {
+      await downloadResults(taskId)
+    } catch { /* ignore */ }
+    finally { setDownloadingId(null) }
   }
 
   if (loading && tasks.length === 0) {
@@ -205,6 +215,19 @@ export default function TaskList() {
                   </td>
                   <td>
                     <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                      {task.status === 'completed' && task.result_file && (
+                        <button
+                          onClick={(e) => handleDownload(task.task_id, e)}
+                          disabled={downloadingId === task.task_id}
+                          className="p-1.5 text-green-500 hover:text-green-700 rounded-lg hover:bg-green-50 transition-colors disabled:opacity-50"
+                          title="Скачать Excel"
+                        >
+                          {downloadingId === task.task_id
+                            ? <Loader2 className="w-4 h-4 animate-spin" />
+                            : <Download className="w-4 h-4" />
+                          }
+                        </button>
+                      )}
                       <button
                         onClick={(e) => { e.stopPropagation(); navigate(`/tasks/${task.task_id}`) }}
                         className="p-1.5 text-slate-400 hover:text-primary-600 rounded-lg hover:bg-primary-50 transition-colors"

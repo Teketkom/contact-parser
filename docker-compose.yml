@@ -11,10 +11,13 @@ services:
     restart: unless-stopped
     environment:
       # LLM configuration
-      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
-      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-perplexity}
+      LLM_API_KEY: ${LLM_API_KEY:-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}
+      LLM_MODEL: ${LLM_MODEL:-sonar}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.perplexity.ai}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-30}
+      LLM_MAX_TOKENS_PER_REQUEST: ${LLM_MAX_TOKENS_PER_REQUEST:-4096}
+      LLM_SESSION_TOKEN_BUDGET: ${LLM_SESSION_TOKEN_BUDGET:-1000000}
       # App configuration
       APP_ENV: ${APP_ENV:-production}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}

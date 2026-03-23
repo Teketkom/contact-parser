@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from app.config import settings
+from app.core.normalizer import normalize_contacts
 from app.models import (
     ExtractionVariant,
     ParseMode,
@@ -86,7 +87,7 @@ class TaskManager:
         """Создаёт новую задачу парсинга и сохраняет её состояние."""
         task = ParseTask(
             mode=mode,
-            variant=variant,
+            variant=ExtractionVariant.AI,  # Всегда Вариант B
             sites=sites,
             target_positions=target_positions,
             search_queries=search_queries,
@@ -166,7 +167,7 @@ class TaskManager:
             from app.core.blacklist import blacklist_manager
 
             extractor = ContactExtractor(
-                variant=task.variant,
+                variant=ExtractionVariant.AI,  # Всегда Вариант B
                 target_positions=task.target_positions,
                 mode=task.mode,
             )
@@ -236,6 +237,8 @@ class TaskManager:
                             task.progress.errors += 1
 
                     unique_contacts = _deduplicate_contacts(contacts)
+                    # Нормализация контактов перед экспортом
+                    unique_contacts = normalize_contacts(unique_contacts)
                     task.progress.contacts_found += len(unique_contacts)
                     all_results.append({
                         "site_url": url,
