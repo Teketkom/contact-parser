@@ -1,109 +1,75 @@
 // TypeScript interfaces matching backend Pydantic models
 
-export type TaskMode = 1 | 2
+export type TaskMode = 1 | 2 | 3
 
 export type TaskStatus =
   | 'pending'
   | 'running'
+  | 'paused'
   | 'completed'
   | 'failed'
   | 'cancelled'
 
-export interface ContactRecord {
-  id?: number
-  task_id: string
-  site_url: string
-  company_name?: string
-  full_name?: string
-  position?: string
-  email?: string
-  phone?: string
-  inn?: string
-  kpp?: string
-  source_url?: string
-  matched_positions?: string[]
-  raw_text?: string
-  created_at?: string
-}
+export type ExtractionVariant = 'A' | 'B'
 
 export interface TaskProgress {
-  task_id: string
-  status: TaskStatus
   total_sites: number
   processed_sites: number
-  found_records: number
-  error_count: number
+  total_pages: number
+  contacts_found: number
+  errors: number
   current_site?: string
-  current_site_index?: number
+  current_page?: string
+  percent: number
   elapsed_seconds: number
-  estimated_remaining_seconds?: number
-  errors: string[]
-  message?: string
+  eta_seconds?: number
+  llm_tokens_used: number
+  fallback_count: number
 }
 
-export interface TaskResult {
+export interface TaskResponse {
   task_id: string
   status: TaskStatus
   mode: TaskMode
+  variant: ExtractionVariant
   created_at: string
   started_at?: string
   finished_at?: string
-  total_sites: number
-  processed_sites: number
-  found_records: number
-  error_count: number
-  elapsed_seconds?: number
+  progress: TaskProgress
   result_file?: string
   log_file?: string
-  target_positions?: string[]
+  error_message?: string
 }
 
-export interface TaskListItem {
-  task_id: string
-  status: TaskStatus
-  mode: TaskMode
-  created_at: string
-  finished_at?: string
-  total_sites: number
-  processed_sites: number
-  found_records: number
-  error_count: number
+export interface ContactRecord {
+  company_name?: string
+  site_url?: string
+  inn?: string
+  kpp?: string
+  company_email?: string
+  position_raw?: string
+  position_normalized?: string
+  full_name?: string
+  personal_email?: string
+  phone?: string
+  phone_raw?: string
+  source_url?: string
+  page_language?: string
+  scan_date?: string
+  status?: string
+  comment?: string
+  extraction_variant?: ExtractionVariant
 }
 
-export interface CreateTaskRequest {
-  mode: TaskMode
-  target_positions?: string[]
-}
-
-export interface CreateTaskResponse {
-  task_id: string
-  status: TaskStatus
-  message: string
-}
-
-export interface BlacklistEntry {
-  domain: string
-  reason?: string
-  added_at: string
-}
-
-export interface BlacklistResponse {
+export interface BlacklistUploadResponse {
   added: number
-  skipped: number
   total: number
-  entries: BlacklistEntry[]
+  message: string
 }
 
 export interface ApiError {
   detail: string
-  status_code?: number
-}
-
-export interface PaginatedTasks {
-  items: TaskListItem[]
-  total: number
-  page: number
-  page_size: number
+  error?: string
 }
 
 export interface UploadFileInfo {
@@ -114,6 +80,8 @@ export interface UploadFileInfo {
 }
 
 export interface WSMessage {
-  type: 'progress' | 'completed' | 'error' | 'ping'
-  data: TaskProgress | TaskResult | { message: string }
+  type: 'progress' | 'log' | 'completed' | 'error' | 'cancelled'
+  task_id: string
+  data: Record<string, unknown>
+  timestamp?: string
 }

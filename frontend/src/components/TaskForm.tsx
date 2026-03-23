@@ -31,18 +31,24 @@ export default function TaskForm({ onTaskCreated }: TaskFormProps) {
 
   const handleFile = useCallback(async (f: File) => {
     const ext = f.name.split('.').pop()?.toLowerCase()
-    if (!ext || !['xlsx', 'xls', 'csv'].includes(ext)) {
-      setFileError('Допустимые форматы: .xlsx, .xls, .csv')
+    if (!ext || !['xlsx', 'xls', 'csv', 'txt'].includes(ext)) {
+      setFileError('Допустимые форматы: .xlsx, .xls, .csv, .txt')
+      setFile(null)
       return
     }
+    // Устанавливаем файл СРАЗУ — кнопка станет активной
     setFile(f)
     setFileError(null)
     setFileInfo(null)
+    setSubmitError(null)
+
+    // Превью загружаем асинхронно — не блокирует кнопку
     setFilePreviewLoading(true)
     try {
       const info = await previewFile(f)
       setFileInfo(info)
     } catch {
+      // Превью недоступно — не критично, файл всё равно установлен
       setFileInfo({ filename: f.name, size_bytes: f.size, rows_count: 0, preview_urls: [] })
     } finally {
       setFilePreviewLoading(false)
@@ -75,6 +81,7 @@ export default function TaskForm({ onTaskCreated }: TaskFormProps) {
     setFile(null)
     setFileInfo(null)
     setFileError(null)
+    setSubmitError(null)
     if (fileInputRef.current) fileInputRef.current.value = ''
   }, [])
 
@@ -148,7 +155,7 @@ export default function TaskForm({ onTaskCreated }: TaskFormProps) {
       <div className="card p-5">
         <label className="block text-sm font-semibold text-slate-700 mb-3">
           Файл со списком сайтов
-          <span className="text-xs font-normal text-slate-400 ml-2">.xlsx, .xls, .csv</span>
+          <span className="text-xs font-normal text-slate-400 ml-2">.xlsx, .xls, .csv, .txt</span>
         </label>
 
         {!file ? (
@@ -169,12 +176,12 @@ export default function TaskForm({ onTaskCreated }: TaskFormProps) {
               {isDragging ? 'Отпустите файл' : 'Перетащите файл или нажмите для выбора'}
             </p>
             <p className="text-xs text-slate-400">
-              Поддерживаются: Excel (.xlsx, .xls) и CSV файлы
+              Поддерживаются: Excel (.xlsx, .xls), CSV и TXT файлы
             </p>
             <input
               ref={fileInputRef}
               type="file"
-              accept=".xlsx,.xls,.csv"
+              accept=".xlsx,.xls,.csv,.txt"
               className="hidden"
               onChange={handleInputChange}
             />
@@ -195,7 +202,9 @@ export default function TaskForm({ onTaskCreated }: TaskFormProps) {
                     </span>
                   )}
                   {fileInfo && fileInfo.rows_count > 0 && (
-                    <span className="text-xs text-green-600">{fileInfo.rows_count} строк</span>
+                    <span className="text-xs text-green-600">
+                      {fileInfo.rows_count} {fileInfo.rows_count === 1 ? 'сайт' : fileInfo.rows_count < 5 ? 'сайта' : 'сайтов'}
+                    </span>
                   )}
                 </div>
                 {fileInfo?.preview_urls && fileInfo.preview_urls.length > 0 && (

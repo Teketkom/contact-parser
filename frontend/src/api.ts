@@ -1,10 +1,7 @@
 import axios, { AxiosError } from 'axios'
 import type {
-  CreateTaskResponse,
-  TaskResult,
-  TaskProgress,
-  PaginatedTasks,
-  BlacklistResponse,
+  TaskResponse,
+  BlacklistUploadResponse,
   UploadFileInfo,
   TaskMode,
   ApiError,
@@ -41,28 +38,28 @@ export async function createTask(
   file: File,
   mode: TaskMode,
   targetPositions?: string[]
-): Promise<CreateTaskResponse> {
+): Promise<TaskResponse> {
   const form = new FormData()
   form.append('file', file)
   form.append('mode', String(mode))
   if (targetPositions && targetPositions.length > 0) {
     form.append('target_positions', targetPositions.join(','))
   }
-  const { data } = await api.post<CreateTaskResponse>('/tasks', form, {
+  const { data } = await api.post<TaskResponse>('/tasks', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
   return data
 }
 
 /**
- * List all tasks with pagination.
+ * List all tasks.
  */
 export async function listTasks(
-  page = 1,
-  pageSize = 20
-): Promise<PaginatedTasks> {
-  const { data } = await api.get<PaginatedTasks>('/tasks', {
-    params: { page, page_size: pageSize },
+  limit = 50,
+  offset = 0
+): Promise<TaskResponse[]> {
+  const { data } = await api.get<TaskResponse[]>('/tasks', {
+    params: { limit, offset },
   })
   return data
 }
@@ -70,24 +67,16 @@ export async function listTasks(
 /**
  * Get detailed info about a specific task.
  */
-export async function getTask(taskId: string): Promise<TaskResult> {
-  const { data } = await api.get<TaskResult>(`/tasks/${taskId}`)
+export async function getTask(taskId: string): Promise<TaskResponse> {
+  const { data } = await api.get<TaskResponse>(`/tasks/${taskId}`)
   return data
 }
 
 /**
- * Get current progress of a running task (polling fallback).
- */
-export async function getTaskProgress(taskId: string): Promise<TaskProgress> {
-  const { data } = await api.get<TaskProgress>(`/tasks/${taskId}/progress`)
-  return data
-}
-
-/**
- * Cancel a running task.
+ * Cancel a running task (DELETE method).
  */
 export async function cancelTask(taskId: string): Promise<{ message: string }> {
-  const { data } = await api.post<{ message: string }>(`/tasks/${taskId}/cancel`)
+  const { data } = await api.delete<{ message: string }>(`/tasks/${taskId}`)
   return data
 }
 
@@ -105,7 +94,7 @@ export async function deleteTask(taskId: string): Promise<{ message: string }> {
  * Download the Excel results file for a task.
  */
 export async function downloadResults(taskId: string): Promise<void> {
-  const response = await api.get(`/tasks/${taskId}/download`, {
+  const response = await api.get(`/tasks/${taskId}/results`, {
     responseType: 'blob',
   })
   const url = window.URL.createObjectURL(new Blob([response.data]))
@@ -158,28 +147,20 @@ export async function previewFile(file: File): Promise<UploadFileInfo> {
 /**
  * Upload blacklist file (txt or xlsx with domains).
  */
-export async function uploadBlacklist(file: File): Promise<BlacklistResponse> {
+export async function uploadBlacklist(file: File): Promise<BlacklistUploadResponse> {
   const form = new FormData()
   form.append('file', file)
-  const { data } = await api.post<BlacklistResponse>('/blacklist/upload', form, {
+  const { data } = await api.post<BlacklistUploadResponse>('/blacklist', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
   return data
 }
 
 /**
- * Get current blacklist entries.
+ * Get current blacklist stats.
  */
-export async function getBlacklist(): Promise<{ entries: { domain: string; reason?: string; added_at: string }[]; total: number }> {
+export async function getBlacklist(): Promise<{ domains: number; emails: number; inns: number; total: number }> {
   const { data } = await api.get('/blacklist')
-  return data
-}
-
-/**
- * Remove a domain from the blacklist.
- */
-export async function removeFromBlacklist(domain: string): Promise<{ message: string }> {
-  const { data } = await api.delete(`/blacklist/${encodeURIComponent(domain)}`)
   return data
 }
 
@@ -197,7 +178,7 @@ export function connectTaskWebSocket(
 ): WebSocket {
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const host = window.location.host
-  const ws = new WebSocket(`${protocol}://${host}/ws/tasks/${taskId}`)
+  const ws = new WebSocket(`${protocol}://${host}/api/ws/${taskId}`)
   ws.addEventListener('message', onMessage)
   if (onClose) ws.addEventListener('close', onClose)
   if (onError) ws.addEventListener('error', onError)

@@ -70,10 +70,41 @@ def _task_to_response(task: ParseTask) -> TaskResponse:
     )
 
 
+def _find_header_row(rows: list) -> int:
+    """
+    Ищет строку с заголовками в Excel-файле.
+    Заголовочная строка содержит хотя бы 2 непустых ячейки и
+    хотя бы одно ключевое слово (url, сайт, site, компани, название и т.д.)
+    """
+    keywords = {"url", "сайт", "site", "компани", "company", "название", "отрасль", "домен", "domain", "адрес", "официальн"}
+    for idx, row in enumerate(rows[:10]):  # Проверяем первые 10 строк
+        if not row:
+            continue
+        cells = [str(c).strip().lower() for c in row if c is not None and str(c).strip()]
+        if len(cells) < 2:
+            continue
+        for cell in cells:
+            for kw in keywords:
+                if kw in cell:
+                    return idx
+    return 0  # Если заголовки не найдены — считаем что первая строка
+
+
+def _find_column(headers: list[str], keywords: list[str]) -> Optional[int]:
+    """Ищет столбец по списку ключевых слов в заголовках."""
+    for i, h in enumerate(headers):
+        h_lower = h.lower()
+        for kw in keywords:
+            if kw in h_lower:
+                return i
+    return None
+
+
 def _parse_sites_from_excel_or_csv(content: bytes, filename: str) -> list[SiteEntry]:
     """
     Парсит список сайтов из Excel или CSV файла.
-    Ожидаемые столбцы: url (обязательный), company_name (опциональный), inn (опциональный).
+    Автоматически определяет строку заголовков и столбцы с URL, названием компании, ИНН.
+    Поддерживает заголовки на русском и английском языках.
     """
     entries: list[SiteEntry] = []
 
@@ -85,22 +116,56 @@ def _parse_sites_from_excel_or_csv(content: bytes, filename: str) -> list[SiteEn
             rows = list(ws.iter_rows(values_only=True))
             if not rows:
                 return entries
-            # Определяем заголовки (первая строка)
-            headers = [str(h).strip().lower() if h else "" for h in rows[0]]
-            url_col = next(
-                (i for i, h in enumerate(headers) if "url" in h or "сайт" in h or "site" in h),
-                0,
+
+            # Автоматически определяем строку заголовков
+            header_idx = _find_header_row(rows)
+            headers = [str(h).strip().lower() if h else "" for h in rows[header_idx]]
+
+            logger.info(
+                "Excel: строка заголовков=%d, заголовки=%s",
+                header_idx, headers,
             )
-            name_col = next(
-                (i for i, h in enumerate(headers) if "компани" in h or "company" in h or "название" in h),
-                None,
+
+            # Ищем столбец с URL/сайтом — включая "официальный сайт"
+            url_col = _find_column(
+                headers,
+                ["url", "официальн", "сайт", "site", "домен", "domain", "адрес", "web", "ссылка", "link"],
             )
-            inn_col = next(
-                (i for i, h in enumerate(headers) if "инн" in h or "inn" in h),
-                None,
+
+            # Ищем столбец с названием компании
+            name_col = _find_column(
+                headers,
+                ["компани", "company", "название", "организаци", "name", "наименован", "фирма"],
             )
-            for row in rows[1:]:
-                if not row or not row[url_col]:
+
+            # Ищем столбец с ИНН
+            inn_col = _find_column(headers, ["инн", "inn", "tax"])
+
+            # Если URL-столбец не найден, пробуем найти столбец содержащий URL-подобные значения
+            if url_col is None:
+                data_rows = rows[header_idx + 1:]
+                for col_idx in range(len(headers)):
+                    url_like_count = 0
+                    for row in data_rows[:5]:
+                        if row and col_idx < len(row) and row[col_idx]:
+                            val = str(row[col_idx]).strip()
+                            if "." in val and " " not in val:
+                                url_like_count += 1
+                    if url_like_count >= 2:
+                        url_col = col_idx
+                        break
+
+            if url_col is None:
+                url_col = 0
+                logger.warning("Не удалось определить столбец URL, используем столбец 0")
+
+            logger.info(
+                "Столбцы: url=%s, name=%s, inn=%s",
+                url_col, name_col, inn_col,
+            )
+
+            for row in rows[header_idx + 1:]:
+                if not row or url_col >= len(row) or not row[url_col]:
                     continue
                 url_val = str(row[url_col]).strip()
                 if not url_val or url_val.startswith("#"):
@@ -110,8 +175,8 @@ def _parse_sites_from_excel_or_csv(content: bytes, filename: str) -> list[SiteEn
                     url_val = "https://" + url_val
                 entry = SiteEntry(
                     url=url_val,
-                    company_name=str(row[name_col]).strip() if name_col is not None and row[name_col] else None,
-                    inn=str(row[inn_col]).strip() if inn_col is not None and row[inn_col] else None,
+                    company_name=str(row[name_col]).strip() if name_col is not None and name_col < len(row) and row[name_col] else None,
+                    inn=str(row[inn_col]).strip() if inn_col is not None and inn_col < len(row) and row[inn_col] else None,
                 )
                 entries.append(entry)
         except Exception as exc:
@@ -124,14 +189,17 @@ def _parse_sites_from_excel_or_csv(content: bytes, filename: str) -> list[SiteEn
             dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t")
             reader = csv.DictReader(io.StringIO(text), dialect=dialect)
             for row in reader:
-                # Ищем колонку с URL
                 url_val = None
                 for key in row:
-                    if key and ("url" in key.lower() or "сайт" in key.lower() or "site" in key.lower()):
+                    if key and any(kw in key.lower() for kw in ["url", "официальн", "сайт", "site", "домен", "domain", "адрес", "web", "ссылка"]):
                         url_val = row[key].strip()
                         break
                 if not url_val:
-                    # Берём первое не-пустое значение
+                    for v in row.values():
+                        if v and v.strip() and "." in v.strip():
+                            url_val = v.strip()
+                            break
+                if not url_val:
                     url_val = next((v.strip() for v in row.values() if v and v.strip()), None)
                 if not url_val:
                     continue
@@ -141,7 +209,7 @@ def _parse_sites_from_excel_or_csv(content: bytes, filename: str) -> list[SiteEn
                 company = None
                 inn = None
                 for key in row:
-                    if key and ("компани" in key.lower() or "company" in key.lower() or "название" in key.lower()):
+                    if key and any(kw in key.lower() for kw in ["компани", "company", "название", "организаци", "наименован"]):
                         company = row[key].strip() or None
                     if key and ("инн" in key.lower() or "inn" in key.lower()):
                         inn = row[key].strip() or None
@@ -152,7 +220,6 @@ def _parse_sites_from_excel_or_csv(content: bytes, filename: str) -> list[SiteEn
             raise HTTPException(status_code=422, detail=f"Ошибка чтения CSV: {exc}")
 
     elif filename.endswith(".txt"):
-        # Простой список URL, по одному на строку
         try:
             text = content.decode("utf-8-sig", errors="replace")
             for line in text.splitlines():
@@ -171,6 +238,39 @@ def _parse_sites_from_excel_or_csv(content: bytes, filename: str) -> list[SiteEn
         )
 
     return entries
+
+
+# ── Превью файла ────────────────────────────────────────────────────────────────────
+
+@router.post(
+    "/upload/preview",
+    summary="Превью загруженного файла",
+    tags=["Загрузка"],
+)
+async def preview_upload(
+    file: UploadFile = File(..., description="Excel/CSV/TXT файл для превью"),
+) -> dict:
+    """
+    Валидирует загруженный файл и возвращает превью: количество строк и первые URL.
+    """
+    content = await file.read()
+    filename = file.filename or "upload.csv"
+
+    try:
+        sites = _parse_sites_from_excel_or_csv(content, filename)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Ошибка обработки файла: {exc}")
+
+    preview_urls = [s.url for s in sites[:10]]
+
+    return {
+        "filename": filename,
+        "size_bytes": len(content),
+        "rows_count": len(sites),
+        "preview_urls": preview_urls,
+    }
 
 
 # ── Управление задачами ────────────────────────────────────────────────────────────
@@ -201,26 +301,17 @@ async def create_task(
 ) -> TaskResponse:
     """
     Создаёт новую задачу парсинга контактной информации.
-
-    - **mode=1**: Сайты + целевые должности (нужен список должностей)
-    - **mode=2**: Сайты + все найденные должности
-    - **mode=3**: Автопоиск компаний по поисковым запросам
-
-    Для режимов 1 и 2 необходим файл со списком сайтов.
     """
-    # Валидация режима
     try:
         parse_mode = ParseMode(mode)
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Неверный режим парсинга: {mode}")
 
-    # Валидация варианта
     try:
         extract_variant = ExtractionVariant(variant.upper())
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Неверный вариант извлечения: {variant}")
 
-    # Парсим должности
     positions = [p.strip() for p in target_positions.split(",") if p.strip()]
     if parse_mode == ParseMode.SITES_WITH_TARGET_POSITIONS and not positions:
         raise HTTPException(
@@ -228,7 +319,6 @@ async def create_task(
             detail="Для режима 1 необходимо указать целевые должности",
         )
 
-    # Парсим поисковые запросы
     queries = [q.strip() for q in search_queries.split(",") if q.strip()]
     if parse_mode == ParseMode.AUTO_SEARCH and not queries:
         raise HTTPException(
@@ -236,7 +326,6 @@ async def create_task(
             detail="Для режима 3 необходимо указать поисковые запросы",
         )
 
-    # Читаем список сайтов из файла
     sites: list[SiteEntry] = []
     if file is not None:
         content = await file.read()
@@ -250,7 +339,6 @@ async def create_task(
             detail="Для режимов 1 и 2 необходим файл со списком сайтов",
         )
 
-    # Создаём задачу
     task = await task_manager.create_task(
         mode=parse_mode,
         variant=extract_variant,
@@ -259,7 +347,6 @@ async def create_task(
         search_queries=queries,
     )
 
-    # Запускаем фоновую обработку
     background_tasks.add_task(task_manager.run_task, str(task.task_id))
 
     logger.info(
@@ -294,7 +381,6 @@ async def list_tasks(
         except ValueError:
             pass
 
-    # Сортируем по дате создания (новые первые)
     all_tasks.sort(key=lambda t: t.created_at, reverse=True)
     paginated = all_tasks[offset : offset + limit]
 
@@ -317,21 +403,20 @@ async def get_task(task_id: str) -> TaskResponse:
 
 @router.delete(
     "/tasks/{task_id}",
-    summary="Отменить задачу",
+    summary="Отменить/удалить задачу",
     tags=["Задачи"],
 )
-async def cancel_task(task_id: str) -> dict:
-    """Отменяет выполнение задачи парсинга."""
+async def cancel_or_delete_task(task_id: str) -> dict:
+    """Отменяет выполнение или удаляет задачу парсинга."""
     task = task_manager.tasks.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail=f"Задача {task_id} не найдена")
-    if task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Нельзя отменить задачу со статусом {task.status}",
-        )
-    await task_manager.cancel_task(task_id)
-    return {"message": f"Задача {task_id} отменена"}
+    if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+        await task_manager.cancel_task(task_id)
+        return {"message": f"Задача {task_id} отменена"}
+    else:
+        del task_manager.tasks[task_id]
+        return {"message": f"Задача {task_id} удалена"}
 
 
 # ── Результаты и логи ──────────────────────────────────────────────────────────────
@@ -365,6 +450,17 @@ async def download_results(task_id: str) -> FileResponse:
         filename=result_path.name,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+@router.get(
+    "/tasks/{task_id}/download",
+    summary="Скачать результаты (алиас)",
+    tags=["Результаты"],
+    include_in_schema=False,
+)
+async def download_results_alias(task_id: str) -> FileResponse:
+    """Алиас для обратной совместимости."""
+    return await download_results(task_id)
 
 
 @router.get(
@@ -405,7 +501,6 @@ async def upload_blacklist(
 ) -> BlacklistUploadResponse:
     """
     Загружает список доменов/email/ИНН, которые должны быть исключены из парсинга.
-    Поддерживаемые форматы: .txt (по одной записи на строку), .csv, .xlsx.
     """
     content = await file.read()
     filename = file.filename or "blacklist.txt"
@@ -451,12 +546,6 @@ async def clear_blacklist() -> dict:
 async def websocket_task_progress(websocket: WebSocket, task_id: str) -> None:
     """
     WebSocket-соединение для получения обновлений прогресса задачи в реальном времени.
-
-    Клиент подключается и получает JSON-сообщения типа:
-    - {type: "progress", data: {...}} — обновление прогресса
-    - {type: "log", data: {message: "..."}} — лог-сообщение
-    - {type: "completed", data: {...}} — задача завершена
-    - {type: "error", data: {message: "..."}} — ошибка задачи
     """
     await websocket.accept()
 
@@ -492,7 +581,6 @@ async def websocket_task_progress(websocket: WebSocket, task_id: str) -> None:
                 message = await queue.get()
                 await websocket.send_json(message)
 
-                # Завершаем соединение если задача закончена
                 if message.get("type") in (
                     WSMessageType.COMPLETED,
                     WSMessageType.ERROR,

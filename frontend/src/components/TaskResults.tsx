@@ -5,7 +5,7 @@ import {
   Clock, Globe, ChevronDown, ChevronUp, ExternalLink
 } from 'lucide-react'
 import { getTask, downloadResults, downloadLogs } from '../api'
-import type { TaskResult, ContactRecord } from '../types'
+import type { TaskResponse, ContactRecord } from '../types'
 import api from '../api'
 
 interface TaskResultsProps {
@@ -21,7 +21,7 @@ const formatDuration = (seconds?: number): string => {
 }
 
 export default function TaskResults({ taskId }: TaskResultsProps) {
-  const [task, setTask] = useState<TaskResult | null>(null)
+  const [task, setTask] = useState<TaskResponse | null>(null)
   const [preview, setPreview] = useState<ContactRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -95,14 +95,16 @@ export default function TaskResults({ taskId }: TaskResultsProps) {
           <p className="text-slate-400 text-xs font-mono mt-0.5">{taskId}</p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleDownloadLogs}
-            disabled={downloadingLogs}
-            className="flex items-center gap-2 px-3 py-2 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-          >
-            <FileText className="w-4 h-4" />
-            {downloadingLogs ? 'Загрузка...' : 'Логи'}
-          </button>
+          {task.log_file && (
+            <button
+              onClick={handleDownloadLogs}
+              disabled={downloadingLogs}
+              className="flex items-center gap-2 px-3 py-2 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+            >
+              <FileText className="w-4 h-4" />
+              {downloadingLogs ? 'Загрузка...' : 'Логи'}
+            </button>
+          )}
           <button
             onClick={handleDownload}
             disabled={downloading || !task.result_file}
@@ -120,7 +122,7 @@ export default function TaskResults({ taskId }: TaskResultsProps) {
             <Users className="w-3.5 h-3.5" />
             Найдено записей
           </div>
-          <p className="text-2xl font-bold text-slate-900">{task.found_records}</p>
+          <p className="text-2xl font-bold text-slate-900">{task.progress.contacts_found}</p>
         </div>
         <div className="card p-4">
           <div className="flex items-center gap-2 text-slate-400 text-xs mb-1.5">
@@ -128,8 +130,8 @@ export default function TaskResults({ taskId }: TaskResultsProps) {
             Обработано сайтов
           </div>
           <p className="text-2xl font-bold text-slate-900">
-            {task.processed_sites}
-            <span className="text-sm font-normal text-slate-400"> / {task.total_sites}</span>
+            {task.progress.processed_sites}
+            <span className="text-sm font-normal text-slate-400"> / {task.progress.total_sites}</span>
           </p>
         </div>
         <div className="card p-4">
@@ -137,8 +139,8 @@ export default function TaskResults({ taskId }: TaskResultsProps) {
             <AlertTriangle className="w-3.5 h-3.5" />
             Ошибок
           </div>
-          <p className={`text-2xl font-bold ${task.error_count > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
-            {task.error_count}
+          <p className={`text-2xl font-bold ${task.progress.errors > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
+            {task.progress.errors}
           </p>
         </div>
         <div className="card p-4">
@@ -146,22 +148,9 @@ export default function TaskResults({ taskId }: TaskResultsProps) {
             <Clock className="w-3.5 h-3.5" />
             Время парсинга
           </div>
-          <p className="text-2xl font-bold text-slate-900">{formatDuration(task.elapsed_seconds)}</p>
+          <p className="text-2xl font-bold text-slate-900">{formatDuration(task.progress.elapsed_seconds)}</p>
         </div>
       </div>
-
-      {task.target_positions && task.target_positions.length > 0 && (
-        <div className="card p-4">
-          <p className="text-xs text-slate-400 mb-2">Целевые должности</p>
-          <div className="flex flex-wrap gap-1.5">
-            {task.target_positions.map((p, i) => (
-              <span key={i} className="px-2 py-0.5 bg-primary-50 text-primary-700 text-xs rounded-full border border-primary-100">
-                {p}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
 
       {preview.length > 0 ? (
         <div className="card overflow-hidden">
@@ -187,18 +176,22 @@ export default function TaskResults({ taskId }: TaskResultsProps) {
               </thead>
               <tbody>
                 {displayedRecords.map((r, i) => (
-                  <tr key={r.id ?? i}>
+                  <tr key={i}>
                     <td className="max-w-[180px]">
                       <span className="truncate block" title={r.company_name}>{r.company_name ?? '—'}</span>
                     </td>
                     <td className="whitespace-nowrap">{r.full_name ?? '—'}</td>
                     <td className="max-w-[160px]">
-                      <span className="truncate block" title={r.position}>{r.position ?? '—'}</span>
+                      <span className="truncate block" title={r.position_raw}>{r.position_raw ?? '—'}</span>
                     </td>
                     <td>
-                      {r.email ? (
-                        <a href={`mailto:${r.email}`} className="text-primary-600 hover:underline text-xs">
-                          {r.email}
+                      {r.personal_email ? (
+                        <a href={`mailto:${r.personal_email}`} className="text-primary-600 hover:underline text-xs">
+                          {r.personal_email}
+                        </a>
+                      ) : r.company_email ? (
+                        <a href={`mailto:${r.company_email}`} className="text-primary-600 hover:underline text-xs">
+                          {r.company_email}
                         </a>
                       ) : '—'}
                     </td>
@@ -207,13 +200,17 @@ export default function TaskResults({ taskId }: TaskResultsProps) {
                     <td>
                       {r.site_url ? (
                         <a
-                          href={r.site_url}
+                          href={r.site_url.startsWith('http') ? r.site_url : `https://${r.site_url}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-primary-600 hover:underline flex items-center gap-1 text-xs"
                         >
                           <ExternalLink className="w-3 h-3" />
-                          {new URL(r.site_url.startsWith('http') ? r.site_url : `https://${r.site_url}`).hostname}
+                          {(() => {
+                            try {
+                              return new URL(r.site_url.startsWith('http') ? r.site_url : `https://${r.site_url}`).hostname
+                            } catch { return r.site_url }
+                          })()}
                         </a>
                       ) : '—'}
                     </td>

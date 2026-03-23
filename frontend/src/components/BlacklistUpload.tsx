@@ -1,14 +1,15 @@
-import { useState, useCallback, DragEvent, ChangeEvent } from 'react'
+import { useState, useCallback, useEffect, DragEvent, ChangeEvent } from 'react'
 import {
-  Upload, ShieldCheck, Trash2, AlertCircle, CheckCircle2,
+  Upload, ShieldCheck, AlertCircle, CheckCircle2,
   Loader2, X, RefreshCw
 } from 'lucide-react'
-import { uploadBlacklist, getBlacklist, removeFromBlacklist } from '../api'
+import { uploadBlacklist, getBlacklist } from '../api'
 
-interface BlacklistEntry {
-  domain: string
-  reason?: string
-  added_at: string
+interface BlacklistStats {
+  domains: number
+  emails: number
+  inns: number
+  total: number
 }
 
 export default function BlacklistUpload() {
@@ -17,20 +18,19 @@ export default function BlacklistUpload() {
   const [uploading, setUploading] = useState(false)
   const [uploadResult, setUploadResult] = useState<{ added: number; total: number } | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
-  const [entries, setEntries] = useState<BlacklistEntry[]>([])
-  const [loadingEntries, setLoadingEntries] = useState(false)
-  const [removingDomain, setRemovingDomain] = useState<string | null>(null)
+  const [stats, setStats] = useState<BlacklistStats | null>(null)
+  const [loadingStats, setLoadingStats] = useState(false)
 
-  const loadEntries = useCallback(async () => {
-    setLoadingEntries(true)
+  const loadStats = useCallback(async () => {
+    setLoadingStats(true)
     try {
       const data = await getBlacklist()
-      setEntries(data.entries)
+      setStats(data)
     } catch { /* ignore */ }
-    finally { setLoadingEntries(false) }
+    finally { setLoadingStats(false) }
   }, [])
 
-  useState(() => { loadEntries() })
+  useEffect(() => { loadStats() }, [loadStats])
 
   const handleFile = useCallback((f: File) => {
     const ext = f.name.split('.').pop()?.toLowerCase()
@@ -58,21 +58,12 @@ export default function BlacklistUpload() {
       const res = await uploadBlacklist(file)
       setUploadResult({ added: res.added, total: res.total })
       setFile(null)
-      await loadEntries()
+      await loadStats()
     } catch (err) {
       setUploadError((err as Error).message)
     } finally {
       setUploading(false)
     }
-  }
-
-  const handleRemove = async (domain: string) => {
-    setRemovingDomain(domain)
-    try {
-      await removeFromBlacklist(domain)
-      setEntries(prev => prev.filter(e => e.domain !== domain))
-    } catch { /* ignore */ }
-    finally { setRemovingDomain(null) }
   }
 
   return (
@@ -137,7 +128,7 @@ export default function BlacklistUpload() {
         {uploadResult && (
           <div className="mt-3 flex items-center gap-2 text-green-600 text-sm">
             <CheckCircle2 className="w-4 h-4" />
-            Добавлено {uploadResult.added} доменов. Всего в базе: {uploadResult.total}
+            Добавлено {uploadResult.added} записей. Всего в базе: {uploadResult.total}
           </div>
         )}
 
@@ -156,60 +147,50 @@ export default function BlacklistUpload() {
         )}
       </div>
 
-      <div className="card overflow-hidden">
-        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-700">
-            Текущий чёрный список
-            {entries.length > 0 && (
-              <span className="ml-2 text-xs font-normal text-slate-400">({entries.length} доменов)</span>
-            )}
+      <div className="card p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-slate-500" />
+            Статистика чёрного списка
           </h2>
           <button
-            onClick={loadEntries}
-            disabled={loadingEntries}
+            onClick={loadStats}
+            disabled={loadingStats}
             className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
             title="Обновить"
           >
-            <RefreshCw className={`w-4 h-4 ${loadingEntries ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-4 h-4 ${loadingStats ? 'animate-spin' : ''}`} />
           </button>
         </div>
 
-        {loadingEntries ? (
+        {stats ? (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="p-3 bg-slate-50 rounded-lg text-center">
+              <p className="text-2xl font-bold text-slate-900">{stats.total}</p>
+              <p className="text-xs text-slate-400 mt-0.5">Всего записей</p>
+            </div>
+            <div className="p-3 bg-slate-50 rounded-lg text-center">
+              <p className="text-2xl font-bold text-slate-900">{stats.domains}</p>
+              <p className="text-xs text-slate-400 mt-0.5">Доменов</p>
+            </div>
+            <div className="p-3 bg-slate-50 rounded-lg text-center">
+              <p className="text-2xl font-bold text-slate-900">{stats.emails}</p>
+              <p className="text-xs text-slate-400 mt-0.5">Email</p>
+            </div>
+            <div className="p-3 bg-slate-50 rounded-lg text-center">
+              <p className="text-2xl font-bold text-slate-900">{stats.inns}</p>
+              <p className="text-xs text-slate-400 mt-0.5">ИНН</p>
+            </div>
+          </div>
+        ) : loadingStats ? (
           <div className="py-8 flex justify-center">
             <Loader2 className="w-5 h-5 text-primary-400 animate-spin" />
           </div>
-        ) : entries.length === 0 ? (
-          <div className="py-12 text-center">
+        ) : (
+          <div className="py-8 text-center">
             <ShieldCheck className="w-8 h-8 text-slate-200 mx-auto mb-2" />
             <p className="text-slate-400 text-sm">Чёрный список пуст</p>
           </div>
-        ) : (
-          <ul className="divide-y divide-slate-100 max-h-96 overflow-y-auto">
-            {entries.map((entry) => (
-              <li key={entry.domain} className="flex items-center gap-3 px-4 py-3">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-mono text-slate-700 truncate">{entry.domain}</p>
-                  {entry.reason && (
-                    <p className="text-xs text-slate-400 mt-0.5">{entry.reason}</p>
-                  )}
-                </div>
-                <span className="text-xs text-slate-300 flex-shrink-0">
-                  {new Date(entry.added_at).toLocaleDateString('ru-RU')}
-                </span>
-                <button
-                  onClick={() => handleRemove(entry.domain)}
-                  disabled={removingDomain === entry.domain}
-                  className="p-1.5 text-slate-300 hover:text-red-500 rounded-lg hover:bg-red-50 transition-colors flex-shrink-0"
-                  title="Удалить из чёрного списка"
-                >
-                  {removingDomain === entry.domain
-                    ? <Loader2 className="w-4 h-4 animate-spin" />
-                    : <Trash2 className="w-4 h-4" />
-                  }
-                </button>
-              </li>
-            ))}
-          </ul>
         )}
       </div>
     </div>

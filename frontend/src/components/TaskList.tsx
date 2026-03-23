@@ -2,14 +2,15 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Clock, CheckCircle2, XCircle, Loader2, AlertCircle,
-  RefreshCw, Trash2, Play, ChevronLeft, ChevronRight, Eye
+  RefreshCw, Trash2, Play, Eye
 } from 'lucide-react'
 import { listTasks, deleteTask } from '../api'
-import type { TaskListItem, TaskStatus } from '../types'
+import type { TaskResponse, TaskStatus } from '../types'
 
 const statusLabel: Record<TaskStatus, string> = {
   pending:   'Ожидание',
   running:   'Выполняется',
+  paused:    'Приостановлена',
   completed: 'Завершено',
   failed:    'Ошибка',
   cancelled: 'Отменено',
@@ -18,6 +19,7 @@ const statusLabel: Record<TaskStatus, string> = {
 const statusColor: Record<TaskStatus, string> = {
   pending:   'bg-amber-50 text-amber-700 border-amber-200',
   running:   'bg-blue-50 text-blue-700 border-blue-200',
+  paused:    'bg-purple-50 text-purple-700 border-purple-200',
   completed: 'bg-green-50 text-green-700 border-green-200',
   failed:    'bg-red-50 text-red-600 border-red-200',
   cancelled: 'bg-slate-100 text-slate-500 border-slate-200',
@@ -30,10 +32,18 @@ const StatusIcon = ({ status }: { status: TaskStatus }) => {
     case 'completed': return <CheckCircle2 className="w-3.5 h-3.5" />
     case 'failed':    return <XCircle className="w-3.5 h-3.5" />
     case 'cancelled': return <AlertCircle className="w-3.5 h-3.5" />
+    default:          return <Clock className="w-3.5 h-3.5" />
   }
 }
 
-const modeLabel = (mode: number) => mode === 1 ? 'Режим 1' : 'Режим 2'
+const modeLabel = (mode: number) => {
+  switch (mode) {
+    case 1: return 'Режим 1'
+    case 2: return 'Режим 2'
+    case 3: return 'Режим 3'
+    default: return `Режим ${mode}`
+  }
+}
 
 const formatDate = (iso?: string) => {
   if (!iso) return '—'
@@ -44,22 +54,18 @@ const formatDate = (iso?: string) => {
 }
 
 export default function TaskList() {
-  const [tasks, setTasks] = useState<TaskListItem[]>([])
-  const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
+  const [tasks, setTasks] = useState<TaskResponse[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
-  const pageSize = 20
   const navigate = useNavigate()
 
-  const load = useCallback(async (p: number) => {
+  const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const res = await listTasks(p, pageSize)
-      setTasks(res.items)
-      setTotal(res.total)
+      const res = await listTasks()
+      setTasks(res)
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -67,14 +73,14 @@ export default function TaskList() {
     }
   }, [])
 
-  useEffect(() => { load(page) }, [page, load])
+  useEffect(() => { load() }, [load])
 
   useEffect(() => {
     const hasRunning = tasks.some(t => t.status === 'running' || t.status === 'pending')
     if (!hasRunning) return
-    const timer = setInterval(() => load(page), 3000)
+    const timer = setInterval(() => load(), 3000)
     return () => clearInterval(timer)
-  }, [tasks, page, load])
+  }, [tasks, load])
 
   const handleDelete = async (taskId: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -82,12 +88,9 @@ export default function TaskList() {
     try {
       await deleteTask(taskId)
       setTasks(prev => prev.filter(t => t.task_id !== taskId))
-      setTotal(prev => prev - 1)
     } catch { /* ignore */ }
     finally { setDeletingId(null) }
   }
-
-  const totalPages = Math.ceil(total / pageSize)
 
   if (loading && tasks.length === 0) {
     return (
@@ -102,7 +105,7 @@ export default function TaskList() {
       <div className="card p-8 text-center">
         <XCircle className="w-8 h-8 text-red-300 mx-auto mb-3" />
         <p className="text-red-500 text-sm">{error}</p>
-        <button onClick={() => load(page)} className="mt-4 text-primary-600 text-sm underline">
+        <button onClick={() => load()} className="mt-4 text-primary-600 text-sm underline">
           Повторить
         </button>
       </div>
@@ -128,9 +131,9 @@ export default function TaskList() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-slate-500">Всего задач: <span className="font-semibold text-slate-700">{total}</span></p>
+        <p className="text-sm text-slate-500">Всего задач: <span className="font-semibold text-slate-700">{tasks.length}</span></p>
         <button
-          onClick={() => load(page)}
+          onClick={() => load()}
           disabled={loading}
           className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-500 hover:bg-slate-50 rounded-lg text-sm transition-colors"
         >
@@ -154,8 +157,8 @@ export default function TaskList() {
           </thead>
           <tbody>
             {tasks.map((task) => {
-              const pct = task.total_sites > 0
-                ? Math.round((task.processed_sites / task.total_sites) * 100)
+              const pct = task.progress.total_sites > 0
+                ? Math.round((task.progress.processed_sites / task.progress.total_sites) * 100)
                 : 0
               return (
                 <tr
@@ -172,9 +175,9 @@ export default function TaskList() {
                     <span className="text-xs font-medium text-slate-600">{modeLabel(task.mode)}</span>
                   </td>
                   <td>
-                    <span className={`status-badge border ${statusColor[task.status]}`}>
+                    <span className={`status-badge border ${statusColor[task.status] ?? statusColor.pending}`}>
                       <StatusIcon status={task.status} />
-                      {statusLabel[task.status]}
+                      {statusLabel[task.status] ?? task.status}
                     </span>
                   </td>
                   <td>
@@ -190,12 +193,12 @@ export default function TaskList() {
                         />
                       </div>
                       <span className="text-xs text-slate-400">
-                        {task.processed_sites}/{task.total_sites}
+                        {task.progress.processed_sites}/{task.progress.total_sites}
                       </span>
                     </div>
                   </td>
                   <td>
-                    <span className="text-sm font-semibold text-slate-800">{task.found_records}</span>
+                    <span className="text-sm font-semibold text-slate-800">{task.progress.contacts_found}</span>
                   </td>
                   <td className="whitespace-nowrap text-xs text-slate-400">
                     {formatDate(task.created_at)}
@@ -228,30 +231,6 @@ export default function TaskList() {
           </tbody>
         </table>
       </div>
-
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between">
-          <p className="text-xs text-slate-400">
-            Страница {page} из {totalPages}
-          </p>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setPage(p => Math.max(1, p - 1))}
-              disabled={page <= 1}
-              className="p-2 border border-slate-200 rounded-lg text-slate-500 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              disabled={page >= totalPages}
-              className="p-2 border border-slate-200 rounded-lg text-slate-500 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

@@ -4,8 +4,8 @@ import {
   Loader2, Globe, CheckCircle2, XCircle, AlertTriangle,
   Clock, Users, Activity, StopCircle
 } from 'lucide-react'
-import { connectTaskWebSocket, getTaskProgress, cancelTask } from '../api'
-import type { TaskProgress as ITaskProgress, WSMessage, TaskStatus } from '../types'
+import { connectTaskWebSocket, getTask, cancelTask } from '../api'
+import type { TaskResponse, TaskProgress as ITaskProgress, WSMessage, TaskStatus } from '../types'
 
 interface TaskProgressProps {
   taskId: string
@@ -24,6 +24,7 @@ const formatDuration = (seconds: number): string => {
 const statusLabel: Record<TaskStatus, string> = {
   pending:   'Ожидание',
   running:   'Выполняется',
+  paused:    'Приостановлена',
   completed: 'Завершено',
   failed:    'Ошибка',
   cancelled: 'Отменено',
@@ -32,13 +33,14 @@ const statusLabel: Record<TaskStatus, string> = {
 const statusColor: Record<TaskStatus, string> = {
   pending:   'bg-amber-100 text-amber-700',
   running:   'bg-blue-100 text-blue-700',
+  paused:    'bg-purple-100 text-purple-700',
   completed: 'bg-green-100 text-green-700',
   failed:    'bg-red-100 text-red-700',
   cancelled: 'bg-slate-100 text-slate-600',
 }
 
 export default function TaskProgress({ taskId, onCompleted }: TaskProgressProps) {
-  const [progress, setProgress] = useState<ITaskProgress | null>(null)
+  const [taskData, setTaskData] = useState<TaskResponse | null>(null)
   const [wsConnected, setWsConnected] = useState(false)
   const [cancelConfirm, setCancelConfirm] = useState(false)
   const [cancelling, setCancelling] = useState(false)
@@ -46,19 +48,23 @@ export default function TaskProgress({ taskId, onCompleted }: TaskProgressProps)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const navigate = useNavigate()
 
+  const updateFromTask = useCallback((t: TaskResponse) => {
+    setTaskData(t)
+    if (t.status === 'completed') onCompleted()
+  }, [onCompleted])
+
   const startPolling = useCallback(() => {
     if (pollRef.current) return
     pollRef.current = setInterval(async () => {
       try {
-        const p = await getTaskProgress(taskId)
-        setProgress(p)
-        if (p.status === 'completed' || p.status === 'failed' || p.status === 'cancelled') {
+        const t = await getTask(taskId)
+        updateFromTask(t)
+        if (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') {
           if (pollRef.current) clearInterval(pollRef.current)
-          if (p.status === 'completed') onCompleted()
         }
       } catch { /* ignore */ }
     }, 2000)
-  }, [taskId, onCompleted])
+  }, [taskId, updateFromTask])
 
   useEffect(() => {
     try {
@@ -67,13 +73,15 @@ export default function TaskProgress({ taskId, onCompleted }: TaskProgressProps)
         (e: MessageEvent) => {
           try {
             const msg = JSON.parse(e.data) as WSMessage
-            if (msg.type === 'progress') {
-              setProgress(msg.data as ITaskProgress)
+            if (msg.type === 'progress' && msg.data) {
+              setTaskData(prev => prev ? { ...prev, progress: msg.data as unknown as ITaskProgress, status: 'running' } : prev)
             } else if (msg.type === 'completed') {
-              setProgress(msg.data as ITaskProgress)
+              setTaskData(prev => prev ? { ...prev, status: 'completed' } : prev)
               onCompleted()
             } else if (msg.type === 'error') {
-              setProgress((prev) => prev ? { ...prev, status: 'failed' } : null)
+              setTaskData(prev => prev ? { ...prev, status: 'failed', error_message: (msg.data as Record<string, string>)?.message } : prev)
+            } else if (msg.type === 'cancelled') {
+              setTaskData(prev => prev ? { ...prev, status: 'cancelled' } : prev)
             }
           } catch { /* ignore parse errors */ }
         },
@@ -98,13 +106,14 @@ export default function TaskProgress({ taskId, onCompleted }: TaskProgressProps)
       startPolling()
     }
 
-    getTaskProgress(taskId).then(setProgress).catch(() => {})
+    // Initial fetch
+    getTask(taskId).then(updateFromTask).catch(() => {})
 
     return () => {
       wsRef.current?.close()
       if (pollRef.current) clearInterval(pollRef.current)
     }
-  }, [taskId, onCompleted, startPolling])
+  }, [taskId, onCompleted, startPolling, updateFromTask])
 
   const handleCancel = async () => {
     if (!cancelConfirm) { setCancelConfirm(true); return }
@@ -117,13 +126,14 @@ export default function TaskProgress({ taskId, onCompleted }: TaskProgressProps)
     }
   }
 
+  const progress = taskData?.progress
   const pct = progress && progress.total_sites > 0
     ? Math.round((progress.processed_sites / progress.total_sites) * 100)
-    : 0
+    : (taskData?.status === 'completed' ? 100 : 0)
 
-  const isFinished = progress?.status === 'completed'
-    || progress?.status === 'failed'
-    || progress?.status === 'cancelled'
+  const isFinished = taskData?.status === 'completed'
+    || taskData?.status === 'failed'
+    || taskData?.status === 'cancelled'
 
   return (
     <div className="space-y-5">
@@ -132,12 +142,12 @@ export default function TaskProgress({ taskId, onCompleted }: TaskProgressProps)
           <h1 className="text-2xl font-semibold text-slate-900">Выполнение задачи</h1>
           <p className="text-slate-400 text-xs font-mono mt-0.5">{taskId}</p>
         </div>
-        {progress?.status && (
-          <span className={`status-badge text-xs ${statusColor[progress.status]}`}>
-            {progress.status === 'running' && (
+        {taskData?.status && (
+          <span className={`status-badge text-xs ${statusColor[taskData.status] ?? ''}`}>
+            {taskData.status === 'running' && (
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
             )}
-            {statusLabel[progress.status]}
+            {statusLabel[taskData.status] ?? taskData.status}
           </span>
         )}
       </div>
@@ -151,7 +161,7 @@ export default function TaskProgress({ taskId, onCompleted }: TaskProgressProps)
         </div>
 
         <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden">
-          {progress?.status === 'running' && progress.total_sites === 0 ? (
+          {taskData?.status === 'running' && progress?.total_sites === 0 ? (
             <div
               className="h-full bg-primary-500 rounded-full relative overflow-hidden"
               style={{ width: '100%' }}
@@ -166,9 +176,9 @@ export default function TaskProgress({ taskId, onCompleted }: TaskProgressProps)
           )}
         </div>
 
-        {progress?.estimated_remaining_seconds != null && progress.status === 'running' && (
+        {progress?.eta_seconds != null && taskData?.status === 'running' && (
           <p className="text-xs text-slate-400 mt-1.5 text-right">
-            Осталось примерно {formatDuration(progress.estimated_remaining_seconds)}
+            Осталось примерно {formatDuration(progress.eta_seconds)}
           </p>
         )}
       </div>
@@ -180,7 +190,7 @@ export default function TaskProgress({ taskId, onCompleted }: TaskProgressProps)
             Найдено записей
           </div>
           <p className="text-2xl font-bold text-slate-900">
-            {progress?.found_records ?? 0}
+            {progress?.contacts_found ?? 0}
           </p>
         </div>
         <div className="card p-4">
@@ -188,8 +198,8 @@ export default function TaskProgress({ taskId, onCompleted }: TaskProgressProps)
             <AlertTriangle className="w-3.5 h-3.5" />
             Ошибок
           </div>
-          <p className={`text-2xl font-bold ${(progress?.error_count ?? 0) > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
-            {progress?.error_count ?? 0}
+          <p className={`text-2xl font-bold ${(progress?.errors ?? 0) > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
+            {progress?.errors ?? 0}
           </p>
         </div>
         <div className="card p-4">
@@ -212,7 +222,7 @@ export default function TaskProgress({ taskId, onCompleted }: TaskProgressProps)
         </div>
       </div>
 
-      {progress?.current_site && progress.status === 'running' && (
+      {progress?.current_site && taskData?.status === 'running' && (
         <div className="card p-4 flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-primary-50 flex items-center justify-center flex-shrink-0">
             <Globe className="w-4 h-4 text-primary-600 animate-pulse" />
@@ -225,38 +235,24 @@ export default function TaskProgress({ taskId, onCompleted }: TaskProgressProps)
         </div>
       )}
 
-      {progress?.errors && progress.errors.length > 0 && (
-        <div className="card p-4">
-          <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-500" />
-            Ошибки ({progress.errors.length})
-          </h3>
-          <ul className="space-y-1.5 max-h-40 overflow-y-auto">
-            {progress.errors.map((err, i) => (
-              <li key={i} className="text-xs text-red-600 font-mono bg-red-50 px-3 py-1.5 rounded-lg">
-                {err}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {progress?.status === 'completed' && (
+      {taskData?.status === 'completed' && (
         <div className="flex items-center gap-3 p-4 bg-green-50 border border-green-200 rounded-xl text-green-700">
           <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
           <div>
             <p className="font-semibold text-sm">Парсинг успешно завершён</p>
-            <p className="text-xs text-green-600">Найдено {progress.found_records} записей</p>
+            <p className="text-xs text-green-600">Найдено {progress?.contacts_found ?? 0} записей</p>
           </div>
         </div>
       )}
 
-      {progress?.status === 'failed' && (
+      {taskData?.status === 'failed' && (
         <div className="flex items-center gap-3 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700">
           <XCircle className="w-5 h-5 flex-shrink-0" />
           <div>
             <p className="font-semibold text-sm">Задача завершилась с ошибкой</p>
-            <p className="text-xs text-red-500">{progress.message}</p>
+            {taskData.error_message && (
+              <p className="text-xs text-red-500">{taskData.error_message}</p>
+            )}
           </div>
         </div>
       )}
@@ -282,7 +278,7 @@ export default function TaskProgress({ taskId, onCompleted }: TaskProgressProps)
             Не отменять
           </button>
         )}
-        {isFinished && progress?.status === 'completed' && (
+        {isFinished && taskData?.status === 'completed' && (
           <button
             type="button"
             onClick={onCompleted}
