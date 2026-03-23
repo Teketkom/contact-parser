@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 from app.config import settings
 from app.core.normalizer import normalize_contacts
+from app.core.enricher import DataEnricher
 from app.models import (
     ExtractionVariant,
     ParseMode,
@@ -259,6 +260,14 @@ class TaskManager:
                 await self._broadcast_progress(task_id, task, start_time)
 
             if all_results:
+                # Обогащение данных (ИНН/КПП, company_email)
+                try:
+                    enricher = DataEnricher()
+                    all_results = await enricher.enrich(all_results)
+                    logger.info("Обогащение данных завершено")
+                except Exception as enrich_exc:
+                    logger.warning("Ошибка обогащения данных: %s", enrich_exc)
+
                 exporter = ExcelExporter()
                 result_path = await exporter.export(
                     results=all_results,

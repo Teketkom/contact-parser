@@ -194,6 +194,57 @@ POSITION_KEYWORDS_EN = {
 }
 
 
+
+# ── Быстрая валидация позиции (до нормализатора) ──────────────────────────────
+
+_MONTHS_RU = {"января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря","январь","февраль","март","апрель","май","июнь","июль","август","сентябрь","октябрь","ноябрь","декабрь"}
+_GARBAGE_POS = {"подробнее","подробности","далее","галерея","республика","кооперативная","пленэр","бокситов","тимана","компания","корпорация","конференция","форум","выставка"}
+
+def _quick_validate_position(text: str) -> bool:
+    """Быстрая проверка: может ли текст быть должностью."""
+    if not text or len(text) < 3 or len(text) > 100:
+        return False
+    lower = text.lower()
+    # Содержит месяц → дата
+    for m in _MONTHS_RU:
+        if m in lower:
+            return False
+    # Начинается с цифры → дата или номер
+    if text[0].isdigit():
+        return False
+    # Мусорные слова
+    for w in lower.split():
+        if w.strip(".,;:-") in _GARBAGE_POS:
+            return False
+    # Содержит @ или URL
+    if "@" in text or "http" in lower or "www." in lower:
+        return False
+    # Заканчивается на ":"
+    if text.endswith(":"):
+        return False
+    # Год (2020-2030)
+    import re as _re
+    if _re.search(r"\b20[12]\d\b", text):
+        return False
+    return True
+
+
+_GARBAGE_NAME_WORDS = {"подробнее","подробности","банкротство","банкротства","практика","компания","компании","галерея","кооперативная","республика","металлургический","пленэр","юрист","адвокат","партнер","партнёр","сооснователь","основатель","бокситов","тимана","конференция","форум","выставка","мероприятие","семинар","далее","ещё","еще","смотреть","читать","туркменистан","узбекистан","украина","казахстан","таджикистан","кыргызстан","белоруссия","беларусь","грузия","армения","азербайджан","молдова","латвия","литва","эстония","гайана","гайаны","арест","ареста","строительства","итоги","активная","фаза","победы","трудовые","будни"}
+
+def _quick_validate_name(fio: str) -> bool:
+    """Быстрая проверка: может ли текст быть реальным ФИО."""
+    if not fio or len(fio) < 4 or len(fio) > 70:
+        return False
+    words = fio.lower().split()
+    for w in words:
+        if w.strip(".,;:-") in _GARBAGE_NAME_WORDS:
+            return False
+    # Содержит цифры — не ФИО
+    if any(c.isdigit() for c in fio):
+        return False
+    return True
+
+
 class ContactExtractor:
     """
     Извлекает контактные данные из HTML-страниц.
@@ -893,7 +944,9 @@ class ContactExtractor:
         """Извлекает первое ФИО из текста."""
         match = RE_FIO_RU.search(text)
         if match:
-            return f"{match.group(1)} {match.group(2)} {match.group(3)}"
+            fio = f"{match.group(1)} {match.group(2)} {match.group(3)}"
+            if _quick_validate_name(fio):
+                return fio
 
         match = RE_FIO_INITIALS.search(text)
         if match:
@@ -909,13 +962,13 @@ class ContactExtractor:
 
         for m in RE_FIO_RU.finditer(text):
             fio = f"{m.group(1)} {m.group(2)} {m.group(3)}"
-            if fio not in seen:
+            if fio not in seen and _quick_validate_name(fio):
                 seen.add(fio)
                 results.append(fio)
 
         for m in RE_FIO_INITIALS.finditer(text):
             fio = f"{m.group(1)}{m.group(2)} {m.group(3)}"
-            if fio not in seen:
+            if fio not in seen and _quick_validate_name(fio):
                 seen.add(fio)
                 results.append(fio)
 
@@ -1054,14 +1107,14 @@ class ContactExtractor:
             classes = " ".join(tag.get("class", []))
             if pos_patterns.search(classes):
                 text = tag.get_text(strip=True)
-                if text and 3 < len(text) < 100:
+                if text and 3 < len(text) < 100 and _quick_validate_position(text):
                     return text
 
         texts = [t.strip() for t in block.stripped_strings]
         for i, text in enumerate(texts):
             if RE_FIO_RU.search(text) and i + 1 < len(texts):
                 next_text = texts[i + 1]
-                if 3 < len(next_text) < 100 and not RE_EMAIL.match(next_text):
+                if 3 < len(next_text) < 100 and not RE_EMAIL.match(next_text) and _quick_validate_position(next_text):
                     return next_text
 
         return None

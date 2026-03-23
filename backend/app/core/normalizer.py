@@ -1,15 +1,6 @@
 """
-Модуль пост-процессинга и нормализации извлечённых контактов.
-Вызывается task_manager после извлечения и перед экспортом в Excel.
-
-Выполняет:
-- Валидацию и очистку каждого поля
-- Удаление мусорных записей
-- Классификацию email (личный vs общий)
-- Валидацию должностей (исключение мусора)
-- Валидацию ФИО (исключение не-персон)
-- Дедупликацию
-- Фильтрацию политиков и знаменитостей
+Модуль нормализации контактов — ПОСЛЕДНИЙ БАРЬЕР перед выгрузкой в Excel.
+Жёсткая валидация ФИО, должностей, email. Удаление мусорных строк.
 """
 
 from __future__ import annotations
@@ -22,303 +13,400 @@ from app.models import ContactRecord
 
 logger = logging.getLogger(__name__)
 
-# ── Общие email-префиксы (НЕ личные email) ─────────────────────────────────
-GENERIC_EMAIL_PREFIXES = frozenset({
-    "info", "support", "help", "admin", "office", "pr", "secretary",
-    "reception", "contact", "mail", "noreply", "sales", "marketing",
-    "press", "media", "feedback", "webmaster", "postmaster", "abuse",
-    "security", "careers", "jobs", "hr", "legal", "compliance",
-    "billing", "finance", "accounting", "it", "tech", "dev", "api",
-    "team", "hello", "general", "service", "inquiry", "request",
-    "booking", "order", "subscribe", "unsubscribe", "newsletter",
-    "post", "no-reply", "do-not-reply", "donotreply",
+# ══════════════════════════════════════════════════════════════════════════════
+# СЛОВАРИ ФИЛЬТРАЦИИ
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Слова-мусор, которые regex захватывает как часть ФИО с сайтов
+GARBAGE_NAME_WORDS = frozenset({
+    "подробнее", "подробности", "подробно", "далее", "ещё", "еще", "читать",
+    "смотреть", "more", "details", "read", "view", "show",
+    "банкротство", "банкротства", "банкротств",
+    "практика", "практики",
+    "компания", "компании", "компаний",
+    "галерея", "галереи",
+    "кооперативная", "кооперативный",
+    "республика", "республики",
+    "металлургический", "металлургическая", "металлургического",
+    "пленэр", "пленэра",
+    "юрист", "юриста", "юристов",
+    "адвокат", "адвоката", "адвокатов",
+    "партнер", "партнёр", "партнера", "партнёра",
+    "сооснователь", "сооснователя",
+    "основатель", "основателя",
+    "бокситов", "боксит", "бокситы",
+    "тимана", "тиман",
+    "конференция", "конференции",
+    "форум", "форума",
+    "выставка", "выставки",
+    "мероприятие", "мероприятия",
+    "семинар", "семинара",
+    "фестиваль", "фестиваля",
+    "проект", "проекта", "проектов",
+    "программа", "программы",
+    "отдел", "отдела", "отделов",
+    "управление", "управления",
+    "департамент", "департамента",
+    "дивизион", "дивизиона",
+    "филиал", "филиала",
+    "представительство", "представительства",
+    "корпорация", "корпорации",
+    "холдинг", "холдинга",
+    "группа", "группы",
+    "комитет", "комитета",
+    "совет", "совета",
+    "президент", "президента",  # Путин и т.д.
+    "правительство", "правительства",
+    "министерство", "министерства",
+    "ведомство", "ведомства",
+    # Страны
+    "туркменистан", "узбекистан", "украина", "казахстан", "таджикистан",
+    "кыргызстан", "белоруссия", "беларусь", "грузия", "армения",
+    "азербайджан", "молдова", "молдавия", "латвия", "литва", "эстония",
+    "россия", "гайана", "гайаны",
+    # Прочий мусор
+    "арест", "ареста", "строительства", "строительство",
+    "пятилетки", "пятилетка", "предвкушении", "расширение",
+    "итоги", "активная", "фаза", "победы", "трудовые", "будни",
+    "сортамент", "продукции", "ринат", "шарафутдинов",
 })
 
-# ── Ключевые слова реальных должностей ──────────────────────────────────────
-POSITION_KEYWORDS = {
-    # Русские
-    "директор", "менеджер", "начальник", "руководитель", "специалист",
-    "инженер", "бухгалтер", "экономист", "юрист", "аналитик",
-    "координатор", "администратор", "секретарь", "ассистент",
-    "консультант", "заведующий", "председатель", "президент",
-    "вице-президент", "заместитель", "главный", "старший", "младший",
-    "ведущий", "главбух", "технолог", "программист", "разработчик",
-    "дизайнер", "маркетолог", "логист", "оператор", "диспетчер",
-    "мастер", "механик", "электрик", "водитель", "охранник",
-    "продавец", "кассир", "товаровед", "агент", "представитель",
-    "партнёр", "учредитель", "основатель", "совладелец", "акционер",
-    "советник", "эксперт", "исследователь", "доцент", "профессор",
-    "врач", "доктор", "архитектор", "аудитор", "контролёр",
-    "супервайзер", "стажёр", "куратор", "редактор", "корреспондент",
-    "переводчик", "методист",
-    # Английские
-    "director", "manager", "head", "chief", "officer", "president",
-    "vice president", "vp", "ceo", "cto", "cfo", "coo", "cmo", "cio",
-    "lead", "senior", "junior", "engineer", "developer", "designer",
-    "analyst", "consultant", "coordinator", "specialist", "assistant",
-    "secretary", "accountant", "lawyer", "advisor", "partner",
-    "founder", "co-founder", "owner", "chairman", "board member",
-    "architect", "auditor", "supervisor", "intern",
-}
+# Города России — если ВСЕ слова ФИО это города, значит это мусор
+RUSSIAN_CITIES = frozenset({
+    "москва", "санкт-петербург", "петербург", "новосибирск", "екатеринбург",
+    "казань", "нижний", "новгород", "челябинск", "самара", "омск", "ростов",
+    "уфа", "красноярск", "пермь", "воронеж", "волгоград", "краснодар",
+    "саратов", "тюмень", "тольятти", "ижевск", "барнаул", "иркутск",
+    "ульяновск", "хабаровск", "владивосток", "ярославль", "махачкала",
+    "томск", "оренбург", "кемерово", "новокузнецк", "рязань", "астрахань",
+    "пенза", "липецк", "тула", "курск", "сочи", "калининград", "чебоксары",
+    "брянск", "мурманск", "магнитогорск", "норильск", "сургут", "архангельск",
+    "смоленск", "белгород", "вологда", "псков", "петрозаводск", "тверь",
+    "киров", "калуга", "орёл", "орел", "тамбов", "кострома", "иваново",
+    "владимир", "йошкар-ола", "чита", "якутск", "улан-удэ", "абакан",
+    "благовещенск", "южно-сахалинск", "биробиджан", "анадырь", "магадан",
+    "петропавловск-камчатский", "нарьян-мар", "ханты-мансийск", "салехард",
+    "сыктывкар", "элиста", "черкесск", "нальчик", "владикавказ", "грозный",
+    "ставрополь", "майкоп", "горно-алтайск", "кызыл", "воткинск", "выборг",
+    "гатчина", "гатчин", "колпино", "пушкин", "стерлитамак", "нефтекамск",
+    "октябрьский", "набережные", "челны", "нижнекамск", "альметьевск",
+    "дзержинск", "арзамас", "саров", "бор", "кстово", "балахна",
+})
 
-# ── Организационные термины (НЕ имена людей) ───────────────────────────────
-ORG_KEYWORDS = {
-    "компания", "отдел", "управление", "департамент", "служба",
-    "филиал", "представительство", "группа", "холдинг", "корпорация",
-    "общество", "фонд", "ассоциация", "союз", "институт",
-    "министерство", "правительство", "администрация", "комитет",
-    "агентство", "бюро", "центр", "лаборатория", "предприятие",
-}
+# Известные политики/не-сотрудники
+BLACKLISTED_NAMES = frozenset({
+    "путин владимир владимирович", "путин в.в.", "путин в в",
+    "медведев дмитрий анатольевич", "мишустин михаил владимирович",
+    "лавров сергей викторович", "шойгу сергей кужугетович",
+})
 
-# ── Известные политики / знаменитости (НЕ сотрудники компаний) ──────────────
-BLACKLISTED_PERSONS = {
-    "путин", "медведев", "мишустин", "лавров", "шойгу",
-    "навальный", "зеленский", "байден", "трамп", "макрон",
-    "си цзиньпин", "меркель", "обама", "клинтон", "собянин",
-    "матвиенко", "володин", "набиуллина", "силуанов", "патрушев",
-}
+# Месяцы — для фильтрации дат в должностях
+MONTHS_RU = frozenset({
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+    "январь", "февраль", "март", "апрель", "май", "июнь",
+    "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
+})
 
+MONTHS_EN = frozenset({
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+})
+
+# Мусорные слова в должностях
+GARBAGE_POSITION_WORDS = frozenset({
+    "подробнее", "подробности", "далее", "галерея", "республика",
+    "кооперативная", "пленэр", "бокситов", "тимана", "конференция",
+    "форум", "выставка", "мероприятие", "семинар", "фестиваль",
+    "компания", "корпорация", "холдинг", "программа",
+})
+
+# Общие email-префиксы (НЕ личные)
+GENERIC_EMAIL_PREFIXES = frozenset({
+    "info", "support", "help", "admin", "office", "pr", "secretary",
+    "reception", "contact", "contacts", "mail", "noreply", "no-reply",
+    "sales", "marketing", "press", "media", "feedback", "webmaster",
+    "postmaster", "abuse", "security", "careers", "jobs", "hr", "legal",
+    "compliance", "billing", "finance", "accounting", "it", "tech", "dev",
+    "api", "team", "hello", "general", "service", "inquiry", "request",
+    "booking", "order", "subscribe", "unsubscribe", "newsletter",
+    "moscow", "msk", "spb", "kazan", "region", "filial", "dept",
+    "otdel", "uso", "unit", "group", "sector", "client", "clients",
+    "work", "vacancy", "vacancies", "tender", "tenders", "zakupki",
+    "zakaz", "zayavka", "priemnaya", "priemka", "post", "pochta",
+    "sekretariat", "sekretar", "kanc", "kancelaria", "obshchiy",
+    "docs", "documents", "doc", "priem", "hotline", "call", "center",
+    "welcome", "corporate", "company", "invest", "investor", "investors",
+    "report", "reports", "supply", "suppliers", "supplier",
+    "quality", "audit", "risk", "treasury", "tax", "procurement",
+})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ОСНОВНАЯ ФУНКЦИЯ
+# ══════════════════════════════════════════════════════════════════════════════
 
 def normalize_contacts(contacts: list[ContactRecord]) -> list[ContactRecord]:
     """
-    Основная функция нормализации.
-    Валидирует, очищает и дедуплицирует список контактов.
-    Вызывается после извлечения и перед экспортом в Excel.
-
-    Args:
-        contacts: Список извлечённых контактов.
-
-    Returns:
-        Очищенный и валидированный список контактов.
+    Нормализация и очистка контактов. Удаляет мусор, валидирует каждое поле.
+    Возвращает только качественные записи.
     """
-    if not contacts:
-        return []
-
-    validated: list[ContactRecord] = []
-    rejected_count = 0
+    result: list[ContactRecord] = []
+    seen: set[str] = set()
+    removed_count = 0
 
     for contact in contacts:
-        # 1. Валидация ФИО
-        if not _validate_full_name(contact.full_name):
-            logger.debug("Нормализатор: отклонено ФИО '%s'", contact.full_name)
-            rejected_count += 1
+        # ── 1. Валидация ФИО (критично — если невалидно, удаляем строку) ──
+        if not _validate_name(contact.full_name):
+            removed_count += 1
             continue
 
-        # 2. Очистка и нормализация ФИО
-        contact.full_name = _clean_full_name(contact.full_name)
+        # Нормализуем ФИО
+        contact.full_name = _normalize_name(contact.full_name)
 
-        # 3. Валидация и очистка должности
+        # Проверка на чёрный список (политики)
+        if contact.full_name and contact.full_name.lower().strip() in BLACKLISTED_NAMES:
+            removed_count += 1
+            continue
+
+        # ── 2. Валидация должности ──
         contact.position_raw = _validate_position(contact.position_raw)
         if not contact.position_raw:
             contact.position_normalized = None
+        elif not _validate_position(contact.position_normalized):
+            contact.position_normalized = contact.position_raw
 
-        # 4. Валидация личного email
+        # ── 3. Классификация email ──
+        if contact.personal_email and _is_generic_email(contact.personal_email):
+            if not contact.company_email:
+                contact.company_email = contact.personal_email.lower().strip()
+            contact.personal_email = None
+
         if contact.personal_email:
-            if _is_generic_email(contact.personal_email):
-                # Перемещаем общий email в company_email
-                if not contact.company_email:
-                    contact.company_email = contact.personal_email.lower()
-                contact.personal_email = None
-                logger.debug(
-                    "Нормализатор: переместил общий email '%s' из личного в компанию для '%s'",
-                    contact.company_email, contact.full_name,
-                )
-            else:
-                contact.personal_email = contact.personal_email.lower().strip()
-
-        # 5. Нормализация company_email
+            contact.personal_email = contact.personal_email.lower().strip()
         if contact.company_email:
             contact.company_email = contact.company_email.lower().strip()
 
-        # 6. Валидация ИНН
-        if contact.inn:
-            digits = re.sub(r"\D", "", contact.inn)
-            if len(digits) in (10, 12):
-                contact.inn = digits
-            else:
-                contact.inn = None
+        # ── 4. Валидация ИНН/КПП ──
+        contact.inn = _validate_inn(contact.inn)
+        contact.kpp = _validate_kpp(contact.kpp)
 
-        # 7. Валидация КПП
-        if contact.kpp:
-            digits = re.sub(r"\D", "", contact.kpp)
-            if len(digits) == 9:
-                contact.kpp = digits
-            else:
-                contact.kpp = None
+        # ── 5. Проверка ценности строки ──
+        # Строка должна иметь хотя бы: ФИО + (email OR phone)
+        has_personal_contact = bool(contact.personal_email or contact.phone)
+        has_position = bool(contact.position_raw)
 
-        validated.append(contact)
+        if not has_personal_contact:
+            # Строка без личного email И без телефона — малоценна
+            # Оставляем только если есть должность (хоть какая-то инфо)
+            if not has_position:
+                removed_count += 1
+                continue
 
-    # 8. Дедупликация (по ФИО + компания)
-    deduplicated = _deduplicate(validated)
+        # ── 6. Дедупликация ──
+        dedup_key = f"{(contact.full_name or '').lower()}|{(contact.company_name or '').lower()}"
+        if dedup_key in seen:
+            removed_count += 1
+            continue
+        seen.add(dedup_key)
 
-    if rejected_count > 0:
+        result.append(contact)
+
+    if removed_count > 0:
         logger.info(
-            "Нормализатор: отклонено %d из %d контактов, итого %d уникальных",
-            rejected_count, len(contacts), len(deduplicated),
+            "Нормализатор: удалено %d мусорных записей из %d (осталось %d)",
+            removed_count, len(contacts), len(result),
         )
 
-    return deduplicated
+    return result
 
 
-def _validate_full_name(name: Optional[str]) -> bool:
-    """
-    Проверяет, что ФИО похоже на реальное имя человека.
-    """
+# ══════════════════════════════════════════════════════════════════════════════
+# ВАЛИДАЦИЯ ФИО
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _validate_name(name: Optional[str]) -> bool:
+    """Проверяет, является ли строка реальным ФИО."""
     if not name or not name.strip():
         return False
 
     name = name.strip()
 
-    # Слишком короткое или длинное
-    if len(name) < 4 or len(name) > 100:
+    # Длина
+    if len(name) < 4 or len(name) > 70:
         return False
 
-    # Содержит числа, URL-символы, email
-    if re.search(r"[\d@:/\\#\[\]{}]", name):
-        return False
-
-    # Содержит URL
-    if re.search(r"https?://|www\.|\.com|\.ru|\.org", name, re.I):
-        return False
-
-    words = name.split()
-
-    # Имя должно состоять из 2-5 слов
-    if len(words) < 2 or len(words) > 5:
-        return False
-
-    # Каждое слово должно начинаться с заглавной буквы
-    for word in words:
-        for part in word.split("-"):
-            part_clean = part.rstrip(".")
-            if part_clean and not part_clean[0].isupper():
-                return False
-
-    # Исключаем организационные термины
+    # Содержит мусорные слова
     name_lower = name.lower()
-    for kw in ORG_KEYWORDS:
-        if kw in name_lower:
+    for word in name_lower.split():
+        word_clean = word.strip(".,;:-()\"'")
+        if word_clean in GARBAGE_NAME_WORDS:
             return False
 
-    # Исключаем известных политиков
-    for person in BLACKLISTED_PERSONS:
-        if person in name_lower:
+    # Количество слов: ФИО = 2-4 слова (Фамилия Имя, Фамилия Имя Отчество, или с инициалами)
+    words = name.split()
+    # Убираем инициалы при подсчёте
+    real_words = [w for w in words if len(w) > 2 or (len(w) == 2 and w.endswith("."))]
+    if len(real_words) < 2 or len(real_words) > 4:
+        return False
+
+    # Каждое слово должно начинаться с заглавной (кириллица или латиница)
+    for word in words:
+        if len(word) <= 2 and word.endswith("."):
+            continue  # Инициал
+        first = word[0]
+        if not (("\u0410" <= first <= "\u042f") or first == "\u0401" or ("A" <= first <= "Z")):
             return False
+
+    # Проверяем, не город ли это
+    name_words_lower = {w.lower().strip(".,;:-()") for w in words if len(w) > 2}
+    if name_words_lower and name_words_lower.issubset(RUSSIAN_CITIES):
+        return False
+
+    # Содержит цифры — не ФИО
+    if re.search(r"\d", name):
+        return False
+
+    # Содержит спецсимволы (кроме дефиса и точки)
+    if re.search(r"[@#$%^&*=+{}\[\]<>/\\|~`]", name):
+        return False
 
     return True
 
 
-def _clean_full_name(name: str) -> str:
-    """Очищает и нормализует ФИО."""
-    name = name.strip()
-    # Убираем лишние пробелы
-    name = re.sub(r"\s+", " ", name)
-    # Убираем точки после полных слов (но не после инициалов)
-    parts = name.split()
-    cleaned = []
-    for part in parts:
-        if len(part) > 2 and part.endswith("."):
-            cleaned.append(part.rstrip("."))
-        else:
-            cleaned.append(part)
-    return " ".join(cleaned)
+def _normalize_name(name: str) -> str:
+    """Нормализует ФИО — убирает лишние пробелы, правильный регистр."""
+    name = " ".join(name.split())  # Убрать двойные пробелы
+    return name.strip()
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ВАЛИДАЦИЯ ДОЛЖНОСТИ
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _validate_position(position: Optional[str]) -> Optional[str]:
-    """
-    Проверяет, что строка является реальной должностью.
-    Отклоняет мусор: телефоны, email, адреса, даты, URL.
-    """
+    """Проверяет, является ли строка реальной должностью."""
     if not position or not position.strip():
         return None
 
     position = position.strip()
 
-    # Слишком короткое или длинное
-    if len(position) < 3 or len(position) > 150:
+    # Длина
+    if len(position) < 3 or len(position) > 100:
         return None
 
-    # Мусорные слова — метки полей, не должности
-    garbage_labels = {
-        "адрес", "адрес:", "телефон", "телефон:", "e-mail", "e-mail:", "email", "email:",
-        "факс", "факс:", "fax", "fax:", "тел", "тел:", "тел.", "почта", "почта:",
-        "phone", "phone:", "address", "address:", "контакт", "контакт:", "контакты",
-        "реквизиты", "реквизиты:", "название", "сайт", "сайт:", "офис", "офис:",
-        "город", "город:", "индекс", "индекс:", "улица", "район", "область",
-        "проспект", "переулок", "шоссе", "бульвар", "набережная",
-    }
-    if position.lower().rstrip(":").strip() in garbage_labels or position.lower().strip() in garbage_labels:
+    pos_lower = position.lower()
+
+    # Это дата (месяц)
+    for month in MONTHS_RU | MONTHS_EN:
+        if month in pos_lower:
+            return None
+
+    # Паттерн даты (01 ..., dd.mm.yyyy)
+    if re.match(r"^\d{1,2}\s", position) or re.match(r"^\d{1,2}\.\d{1,2}\.\d{2,4}", position):
         return None
 
-    # Если позиция состоит из одного слова и заканчивается на ":", это метка поля
-    if position.endswith(":") and " " not in position.strip().rstrip(":"):
+    # Содержит только цифры
+    if re.match(r"^[\d\s.,-]+$", position):
         return None
 
-    # Содержит email
-    if "@" in position:
+    # Содержит email, URL
+    if "@" in position or "http" in pos_lower or "www." in pos_lower:
+        return None
+    if re.search(r"\.\w{2,3}$", position):  # Заканчивается на .ru, .com
         return None
 
-    # Содержит URL
-    if re.search(r"https?://|www\.", position, re.I):
-        return None
-
-    # Содержит телефон (паттерн +7 или 8(...)...)
+    # Содержит телефон
     if re.search(r"(?:\+7|8[\s\-]?\(?\d{3})\)?[\s\-]?\d{3}", position):
         return None
 
-    # Содержит дату
-    if re.search(r"\d{2}[./-]\d{2}[./-]\d{2,4}", position):
+    # Заканчивается на ":" — это метка поля, не должность
+    if position.endswith(":"):
         return None
 
-    # Слишком много цифр
-    digit_count = sum(1 for c in position if c.isdigit())
-    if digit_count > 4:
+    # Мусорные слова в должности
+    for word in pos_lower.split():
+        word_clean = word.strip(".,;:-()\"'")
+        if word_clean in GARBAGE_POSITION_WORDS:
+            return None
+
+    # Год в должности (2023, 2024, 2025, 2026) — скорее всего мероприятие
+    if re.search(r"\b20[1-3]\d\b", position):
         return None
 
-    # Физический адрес
-    address_markers = ["ул.", "пр.", "пер.", "д.", "кв.", "корп.", "стр.", "обл.", "р-н"]
-    pos_lower = position.lower()
-    address_hits = sum(1 for m in address_markers if m in pos_lower)
-    if address_hits >= 2:
-        return None
+    # Проза / заголовок новости: если > 5 слов и нет слов-маркеров должности
+    pos_words = position.split()
+    if len(pos_words) > 5:
+        POSITION_MARKERS = {"директор", "менеджер", "начальник", "руководитель",
+            "заместитель", "главный", "ведущий", "старший", "младший",
+            "специалист", "инженер", "бухгалтер", "аналитик", "юрист",
+            "консультант", "партнер", "партнёр", "president", "director",
+            "manager", "head", "chief", "officer", "lead", "senior", "vp",
+            "ceo", "cto", "cfo", "coo", "cio", "chairman",
+            "председатель", "президент", "вице-президент"}
+        pos_lower_words = {w.lower().strip(".,;:-") for w in pos_words}
+        if not pos_lower_words & POSITION_MARKERS:
+            return None
 
-    # Слишком длинное (>8 слов обычно не должность)
-    if len(position.split()) > 8:
-        return None
+    # Содержит слова-маркеры новостей/прозы
+    NEWS_WORDS = {"строительства", "строительство", "пятилетки", "предвкушении",
+        "победы", "расширение", "сортамента", "продукции", "итоги", "активная",
+        "фаза", "трудовые", "будни", "арест", "ареста"}
+    for w in pos_lower.split():
+        if w.strip(".,;:-") in NEWS_WORDS:
+            return None
 
     return position
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ВАЛИДАЦИЯ EMAIL
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _is_generic_email(email: str) -> bool:
     """Проверяет, является ли email общим/корпоративным (НЕ личным)."""
     if not email:
         return False
+
     prefix = email.split("@")[0].lower().strip()
+
+    # Точное совпадение
     if prefix in GENERIC_EMAIL_PREFIXES:
         return True
-    # Проверяем нормализованный (без разделителей)
+
+    # Нормализация (без разделителей)
     normalized = prefix.replace("-", "").replace(".", "").replace("_", "")
-    normalized_prefixes = {p.replace("-", "").replace(".", "").replace("_", "") for p in GENERIC_EMAIL_PREFIXES}
-    if normalized in normalized_prefixes:
+    norm_prefixes = {p.replace("-", "").replace(".", "").replace("_", "") for p in GENERIC_EMAIL_PREFIXES}
+    if normalized in norm_prefixes:
         return True
-    # Короткие префиксы (1-3 символа) — обычно аббревиатуры отделов, не личные
-    if len(prefix) <= 3 and not prefix.isdigit():
+
+    # Короткий префикс (≤3 символа) — аббревиатура отдела
+    if len(prefix) <= 3:
         return True
-    # Содержит слова-маркеры отделов
-    dept_markers = {"filial", "otdel", "dept", "unit", "group", "sector", "region"}
+
+    # Содержит маркеры отделов/филиалов
+    dept_markers = {"filial", "otdel", "dept", "unit", "group", "sector", "region",
+                    "moscow", "kazan", "spb", "murm", "kola"}
     for marker in dept_markers:
         if marker in prefix:
             return True
+
     return False
 
 
-def _deduplicate(contacts: list[ContactRecord]) -> list[ContactRecord]:
-    """Удаляет дубликаты по ФИО + компания."""
-    seen: set[str] = set()
-    unique: list[ContactRecord] = []
-    for c in contacts:
-        key = f"{(c.full_name or '').lower().strip()}|{(c.company_name or '').lower().strip()}"
-        if key not in seen:
-            seen.add(key)
-            unique.append(c)
-    return unique
+# ══════════════════════════════════════════════════════════════════════════════
+# ВАЛИДАЦИЯ ИНН/КПП
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _validate_inn(inn: Optional[str]) -> Optional[str]:
+    if not inn:
+        return None
+    digits = re.sub(r"\D", "", inn)
+    return digits if len(digits) in (10, 12) else None
+
+
+def _validate_kpp(kpp: Optional[str]) -> Optional[str]:
+    if not kpp:
+        return None
+    digits = re.sub(r"\D", "", kpp)
+    return digits if len(digits) == 9 else None
