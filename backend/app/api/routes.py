@@ -170,6 +170,16 @@ def _parse_sites_from_excel_or_csv(content: bytes, filename: str) -> list[SiteEn
                 url_val = str(row[url_col]).strip()
                 if not url_val or url_val.startswith("#"):
                     continue
+                # Извлечение URL из ячеек с разделителем ; (формат: название;тип;url)
+                if ";" in url_val:
+                    _parts = [_p.strip() for _p in url_val.split(";")]
+                    _url_cand = None
+                    for _p in _parts:
+                        if _p.startswith(("http://", "https://")) or ("." in _p and " " not in _p and len(_p) > 4):
+                            _url_cand = _p
+                            break
+                    if _url_cand:
+                        url_val = _url_cand
                 # Добавляем схему если отсутствует
                 if not url_val.startswith(("http://", "https://")):
                     url_val = "https://" + url_val
