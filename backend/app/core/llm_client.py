@@ -262,7 +262,7 @@ class OpenAIProvider(BaseLLMProvider):
                 ],
                 max_tokens=max_tokens,
                 temperature=temperature,
-                response_format={"type": "json_object"},
+                # response_format removed for local llama.cpp compatibility
             )
         except Exception as exc:
             exc_class = type(exc).__name__
@@ -510,7 +510,7 @@ class LLMClient:
                 self._provider = OpenAIProvider(
                     api_key=api_key,
                     model=model,
-                    base_url=base_url if base_url != "https://api.perplexity.ai" else None,
+                    base_url=base_url,
                 )
             elif provider == "gigachat":
                 self._provider = GigaChatProvider(credentials=api_key, model=model)

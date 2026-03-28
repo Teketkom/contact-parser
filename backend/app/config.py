@@ -41,7 +41,7 @@ class Settings(BaseSettings):
         description="Базовый URL для OpenAI-совместимого API",
     )
     LLM_TIMEOUT: float = Field(
-        default=30.0,
+        default=300.0,
         description="Тайм-аут запроса к LLM (секунды)",
     )
     LLM_MAX_TOKENS_PER_REQUEST: int = Field(
@@ -87,7 +87,7 @@ class Settings(BaseSettings):
         description="Максимальное число страниц, просматриваемых на одном сайте",
     )
     PAGE_TIMEOUT: int = Field(
-        default=30_000,
+        default=300.000,
         ge=5_000,
         le=120_000,
         description="Тайм-аут загрузки страницы (миллисекунды)",
