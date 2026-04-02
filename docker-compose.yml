@@ -12,9 +12,9 @@ services:
     environment:
       # LLM configuration
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
-      LLM_API_KEY: ${LLM_API_KEY:-local-no-key-needed}
-      LLM_MODEL: ${LLM_MODEL:-Qwen3.5-27B.Q3_K_S.gguf}
-      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:1234/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-sk-b1a35959895d61457f3c49115f626135549ead178f0a816255cbb690c441de38}
+      LLM_MODEL: ${LLM_MODEL:-qwen3.5-27b-claude-4.6-opus-reasoning-distilled-v2}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://87.228.29.55:8080/v1}
       LLM_TIMEOUT: ${LLM_TIMEOUT:-120}
       LLM_MAX_TOKENS_PER_REQUEST: ${LLM_MAX_TOKENS_PER_REQUEST:-4096}
       LLM_SESSION_TOKEN_BUDGET: ${LLM_SESSION_TOKEN_BUDGET:-1000000}

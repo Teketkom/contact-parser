@@ -87,7 +87,7 @@ class Settings(BaseSettings):
         description="Максимальное число страниц, просматриваемых на одном сайте",
     )
     PAGE_TIMEOUT: int = Field(
-        default=300.000,
+        default=30000,
         ge=5_000,
         le=120_000,
         description="Тайм-аут загрузки страницы (миллисекунды)",

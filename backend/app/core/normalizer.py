@@ -260,15 +260,8 @@ def normalize_contacts(contacts: list[ContactRecord]) -> list[ContactRecord]:
 
         # ── 5. Проверка ценности строки ──
         # Строка должна иметь хотя бы: ФИО + (email OR phone)
-        has_personal_contact = bool(contact.personal_email or contact.phone)
-        has_position = bool(contact.position_raw)
-
-        if not has_personal_contact:
-            # Строка без личного email И без телефона — малоценна
-            # Оставляем только если есть должность (хоть какая-то инфо)
-            if not has_position:
-                removed_count += 1
-                continue
+        # ВСЕ ФИО остаются в файле, даже без контактов
+        # (для обогащения и загрузки в CRM)
 
         # ── 6. Дедупликация ──
         dedup_key = f"{(contact.full_name or '').lower()}|{(contact.company_name or '').lower()}"
