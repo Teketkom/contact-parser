@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     MAX_PAGES_PER_SITE: int = Field(
         default=10,
         ge=1,
-        le=100,
+        le=500,
         description="Максимальное число страниц, просматриваемых на одном сайте",
     )
     PAGE_TIMEOUT: int = Field(
