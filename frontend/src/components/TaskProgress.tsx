@@ -1,300 +1,404 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import {
-  Loader2, Globe, CheckCircle2, XCircle, AlertTriangle,
-  Clock, Users, Activity, StopCircle
+  Loader2,
+  Globe,
+  Users,
+  Coins,
+  AlertTriangle,
+  Clock,
+  XCircle,
+  CheckCircle2,
+  Download,
+  FileText,
+  StopCircle,
+  ArrowRight,
+  Terminal,
+  BarChart3,
 } from 'lucide-react'
-import { connectTaskWebSocket, getTask, cancelTask } from '../api'
-import type { TaskResponse, TaskProgress as ITaskProgress, WSMessage, TaskStatus } from '../types'
+import { getTask, cancelTask, downloadResults, downloadLogs, connectTaskWebSocket } from '../api'
+import type { TaskResponse, WSMessage } from '../types'
 
-interface TaskProgressProps {
-  taskId: string
-  onCompleted: () => void
-}
-
-const formatDuration = (seconds: number): string => {
-  if (seconds < 60) return `${Math.round(seconds)} с`
-  const m = Math.floor(seconds / 60)
-  const s = Math.round(seconds % 60)
-  if (m < 60) return `${m} мин ${s} с`
-  const h = Math.floor(m / 60)
-  return `${h} ч ${m % 60} мин`
-}
-
-const statusLabel: Record<TaskStatus, string> = {
-  pending:   'Ожидание',
-  running:   'Выполняется',
-  paused:    'Приостановлена',
-  completed: 'Завершено',
-  failed:    'Ошибка',
-  cancelled: 'Отменено',
-}
-
-const statusColor: Record<TaskStatus, string> = {
-  pending:   'bg-amber-100 text-amber-700',
-  running:   'bg-blue-100 text-blue-700',
-  paused:    'bg-purple-100 text-purple-700',
-  completed: 'bg-green-100 text-green-700',
-  failed:    'bg-red-100 text-red-700',
-  cancelled: 'bg-slate-100 text-slate-600',
-}
-
-export default function TaskProgress({ taskId, onCompleted }: TaskProgressProps) {
-  const [taskData, setTaskData] = useState<TaskResponse | null>(null)
-  const [wsConnected, setWsConnected] = useState(false)
-  const [cancelConfirm, setCancelConfirm] = useState(false)
-  const [cancelling, setCancelling] = useState(false)
-  const wsRef = useRef<WebSocket | null>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+export default function TaskProgress() {
+  const { taskId } = useParams<{ taskId: string }>()
   const navigate = useNavigate()
+  const [task, setTask] = useState<TaskResponse | null>(null)
+  const [logs, setLogs] = useState<string[]>([])
+  const [loading, setLoading] = useState(true)
+  const [cancelling, setCancelling] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const logRef = useRef<HTMLDivElement>(null)
+  const wsRef = useRef<WebSocket | null>(null)
 
-  const updateFromTask = useCallback((t: TaskResponse) => {
-    setTaskData(t)
-    if (t.status === 'completed') onCompleted()
-  }, [onCompleted])
-
-  const startPolling = useCallback(() => {
-    if (pollRef.current) return
-    pollRef.current = setInterval(async () => {
-      try {
-        const t = await getTask(taskId)
-        updateFromTask(t)
-        if (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') {
-          if (pollRef.current) clearInterval(pollRef.current)
-        }
-      } catch { /* ignore */ }
-    }, 2000)
-  }, [taskId, updateFromTask])
+  // Auto-scroll logs
+  const scrollToBottom = useCallback(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight
+    }
+  }, [])
 
   useEffect(() => {
-    try {
-      const ws = connectTaskWebSocket(
-        taskId,
-        (e: MessageEvent) => {
-          try {
-            const msg = JSON.parse(e.data) as WSMessage
-            if (msg.type === 'progress' && msg.data) {
-              setTaskData(prev => prev ? { ...prev, progress: msg.data as unknown as ITaskProgress, status: 'running' } : prev)
-            } else if (msg.type === 'completed') {
-              setTaskData(prev => prev ? { ...prev, status: 'completed' } : prev)
-              onCompleted()
-            } else if (msg.type === 'error') {
-              setTaskData(prev => prev ? { ...prev, status: 'failed', error_message: (msg.data as Record<string, string>)?.message } : prev)
-            } else if (msg.type === 'cancelled') {
-              setTaskData(prev => prev ? { ...prev, status: 'cancelled' } : prev)
+    scrollToBottom()
+  }, [logs, scrollToBottom])
+
+  // Load initial task
+  useEffect(() => {
+    if (!taskId) return
+    let cancelled = false
+
+    async function loadTask() {
+      try {
+        const data = await getTask(taskId!)
+        if (!cancelled) {
+          setTask(data)
+          setLoading(false)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Ошибка загрузки задачи')
+          setLoading(false)
+        }
+      }
+    }
+
+    loadTask()
+    return () => { cancelled = true }
+  }, [taskId])
+
+  // WebSocket connection
+  useEffect(() => {
+    if (!taskId) return
+
+    const ws = connectTaskWebSocket(
+      taskId,
+      (event) => {
+        try {
+          const msg: WSMessage = JSON.parse(event.data)
+          switch (msg.type) {
+            case 'progress':
+              setTask(prev => prev ? {
+                ...prev,
+                status: 'running',
+                progress: { ...prev.progress, ...msg.data },
+              } : prev)
+              break
+            case 'log': {
+              const logLine = String(msg.data.message ?? msg.data.line ?? JSON.stringify(msg.data))
+              setLogs(prev => [...prev.slice(-500), logLine])
+              break
             }
-          } catch { /* ignore parse errors */ }
-        },
-        () => {
-          setWsConnected(false)
-          startPolling()
-        },
-        () => {
-          setWsConnected(false)
-          startPolling()
+            case 'completed':
+              setTask(prev => prev ? { ...prev, status: 'completed', progress: { ...prev.progress, ...msg.data } } : prev)
+              break
+            case 'error':
+              setTask(prev => prev ? {
+                ...prev,
+                status: 'failed',
+                error_message: String(msg.data.message ?? msg.data.error ?? 'Неизвестная ошибка'),
+              } : prev)
+              break
+            case 'cancelled':
+              setTask(prev => prev ? { ...prev, status: 'cancelled' } : prev)
+              break
+          }
+        } catch {
+          // Non-JSON message, treat as log
+          setLogs(prev => [...prev.slice(-500), event.data])
         }
-      )
-      ws.addEventListener('open', () => {
-        setWsConnected(true)
-        if (pollRef.current) {
-          clearInterval(pollRef.current)
-          pollRef.current = null
-        }
-      })
-      wsRef.current = ws
-    } catch {
-      startPolling()
-    }
+      },
+      () => {
+        // Reconnect on close if task still running
+        setTimeout(() => {
+          if (wsRef.current) {
+            getTask(taskId).then(setTask).catch(() => {})
+          }
+        }, 3000)
+      },
+      () => {
+        console.error('WebSocket error')
+      }
+    )
 
-    // Initial fetch
-    getTask(taskId).then(updateFromTask).catch(() => {})
-
+    wsRef.current = ws
     return () => {
-      wsRef.current?.close()
-      if (pollRef.current) clearInterval(pollRef.current)
+      wsRef.current = null
+      ws.close()
     }
-  }, [taskId, onCompleted, startPolling, updateFromTask])
+  }, [taskId])
+
+  // Polling fallback
+  useEffect(() => {
+    if (!taskId) return
+    const interval = setInterval(async () => {
+      try {
+        const data = await getTask(taskId)
+        setTask(data)
+      } catch {}
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [taskId])
 
   const handleCancel = async () => {
-    if (!cancelConfirm) { setCancelConfirm(true); return }
+    if (!taskId) return
     setCancelling(true)
     try {
       await cancelTask(taskId)
-    } catch { /* ignore */ } finally {
+      const data = await getTask(taskId)
+      setTask(data)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка отмены')
+    } finally {
       setCancelling(false)
-      setCancelConfirm(false)
     }
   }
 
-  const progress = taskData?.progress
-  const pct = progress && progress.total_sites > 0
-    ? Math.round((progress.processed_sites / progress.total_sites) * 100)
-    : (taskData?.status === 'completed' ? 100 : 0)
+  const formatTime = (seconds: number): string => {
+    if (seconds < 60) return `${Math.round(seconds)}с`
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}м ${Math.round(seconds % 60)}с`
+    return `${Math.floor(seconds / 3600)}ч ${Math.round((seconds % 3600) / 60)}м`
+  }
 
-  const isFinished = taskData?.status === 'completed'
-    || taskData?.status === 'failed'
-    || taskData?.status === 'cancelled'
+  const getLogLineClass = (line: string): string => {
+    const lower = line.toLowerCase()
+    if (lower.includes('error') || lower.includes('ошибка') || lower.includes('fail')) return 'terminal-line-error'
+    if (lower.includes('success') || lower.includes('найден') || lower.includes('готово') || lower.includes('completed')) return 'terminal-line-success'
+    if (lower.includes('warn') || lower.includes('предупреждение') || lower.includes('retry')) return 'terminal-line-warn'
+    return 'terminal-line-info'
+  }
+
+  const isFinished = task?.status === 'completed' || task?.status === 'failed' || task?.status === 'cancelled'
+  const percent = task?.progress?.percent ?? 0
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 text-blue-400 animate-spin" />
+      </div>
+    )
+  }
+
+  if (error && !task) {
+    return (
+      <div className="animate-fade-in">
+        <div className="glass-card p-8 text-center">
+          <XCircle className="w-10 h-10 text-red-400 mx-auto mb-3" />
+          <p className="text-sm text-red-400">{error}</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center justify-between flex-wrap gap-3">
+    <div className="animate-fade-in space-y-6">
+      {/* Header */}
+      <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-900">Выполнение задачи</h1>
-          <p className="text-slate-400 text-xs font-mono mt-0.5">{taskId}</p>
+          <h1 className="text-xl font-bold text-white flex items-center gap-3">
+            Задача
+            <span className="font-mono text-sm text-slate-400 bg-slate-800/50 px-2 py-0.5 rounded">
+              {taskId?.slice(0, 8)}
+            </span>
+          </h1>
+          <p className="text-sm text-slate-400 mt-1">
+            {task?.status === 'running' ? 'Выполняется парсинг...' :
+              task?.status === 'completed' ? 'Задача завершена' :
+              task?.status === 'failed' ? 'Задача завершилась с ошибкой' :
+              task?.status === 'cancelled' ? 'Задача отменена' :
+              'Ожидание...'}
+          </p>
         </div>
-        {taskData?.status && (
-          <span className={`status-badge text-xs ${statusColor[taskData.status] ?? ''}`}>
-            {taskData.status === 'running' && (
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
-            )}
-            {statusLabel[taskData.status] ?? taskData.status}
-          </span>
-        )}
-      </div>
-
-      <div className="card p-6">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-sm font-medium text-slate-700">
-            Обработано {progress?.processed_sites ?? 0} из {progress?.total_sites ?? '…'} сайтов
-          </span>
-          <span className="text-sm font-semibold text-primary-600">{pct}%</span>
-        </div>
-
-        <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden">
-          {taskData?.status === 'running' && progress?.total_sites === 0 ? (
-            <div
-              className="h-full bg-primary-500 rounded-full relative overflow-hidden"
-              style={{ width: '100%' }}
+        <div className="flex items-center gap-2">
+          {task?.status === 'running' && (
+            <button
+              onClick={handleCancel}
+              disabled={cancelling}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors"
             >
-              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-[progress-indeterminate_1.5s_ease-in-out_infinite]" />
-            </div>
-          ) : (
-            <div
-              className="h-full bg-primary-500 rounded-full transition-all duration-500 ease-out"
-              style={{ width: `${pct}%` }}
-            />
+              {cancelling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <StopCircle className="w-3.5 h-3.5" />}
+              Отменить
+            </button>
           )}
         </div>
+      </div>
 
-        {progress?.eta_seconds != null && taskData?.status === 'running' && (
-          <p className="text-xs text-slate-400 mt-1.5 text-right">
-            Осталось примерно {formatDuration(progress.eta_seconds)}
-          </p>
+      {/* Progress bar */}
+      <div className="glass-card p-5">
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm font-medium text-slate-300">Прогресс</span>
+          <span className="text-sm font-bold text-blue-400">{Math.round(percent)}%</span>
+        </div>
+        <div className="w-full h-3 bg-slate-800 rounded-full overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all duration-500 ease-out ${
+              task?.status === 'completed' ? 'bg-gradient-to-r from-emerald-500 to-green-500' :
+              task?.status === 'failed' ? 'bg-red-500' :
+              task?.status === 'cancelled' ? 'bg-slate-600' :
+              'bg-gradient-to-r from-blue-500 to-cyan-500 progress-striped'
+            }`}
+            style={{ width: `${Math.min(percent, 100)}%` }}
+          />
+        </div>
+        {task?.progress?.current_site && task.status === 'running' && (
+          <div className="flex items-center gap-2 mt-3">
+            <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />
+            <span className="text-xs text-slate-400 truncate">
+              {task.progress.current_site}
+            </span>
+          </div>
         )}
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="card p-4">
-          <div className="flex items-center gap-2 text-slate-500 text-xs mb-1.5">
-            <Users className="w-3.5 h-3.5" />
-            Найдено записей
-          </div>
-          <p className="text-2xl font-bold text-slate-900">
-            {progress?.contacts_found ?? 0}
-          </p>
+      {/* Stats cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <StatCard
+          icon={Globe}
+          label="Страниц"
+          value={`${task?.progress?.processed_sites ?? 0}/${task?.progress?.total_sites ?? 0}`}
+          color="blue"
+        />
+        <StatCard
+          icon={Users}
+          label="Контактов"
+          value={String(task?.progress?.contacts_found ?? 0)}
+          color="green"
+        />
+        <StatCard
+          icon={BarChart3}
+          label="Страницы"
+          value={String(task?.progress?.total_pages ?? 0)}
+          color="purple"
+        />
+        <StatCard
+          icon={Coins}
+          label="LLM токены"
+          value={String(task?.progress?.llm_tokens_used ?? 0)}
+          color="amber"
+        />
+        <StatCard
+          icon={AlertTriangle}
+          label="Ошибки"
+          value={String(task?.progress?.errors ?? 0)}
+          color="red"
+        />
+        <StatCard
+          icon={Clock}
+          label="Время"
+          value={formatTime(task?.progress?.elapsed_seconds ?? 0)}
+          color="slate"
+        />
+      </div>
+
+      {/* Live log terminal */}
+      <div className="glass-card overflow-hidden">
+        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-800/50 bg-slate-900/30">
+          <Terminal className="w-4 h-4 text-slate-500" />
+          <span className="text-xs font-medium text-slate-400">Журнал выполнения</span>
+          <div className="flex-1" />
+          {task?.status === 'running' && (
+            <span className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="text-[10px] text-slate-500">Live</span>
+            </span>
+          )}
         </div>
-        <div className="card p-4">
-          <div className="flex items-center gap-2 text-slate-500 text-xs mb-1.5">
-            <AlertTriangle className="w-3.5 h-3.5" />
-            Ошибок
-          </div>
-          <p className={`text-2xl font-bold ${(progress?.errors ?? 0) > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
-            {progress?.errors ?? 0}
-          </p>
-        </div>
-        <div className="card p-4">
-          <div className="flex items-center gap-2 text-slate-500 text-xs mb-1.5">
-            <Clock className="w-3.5 h-3.5" />
-            Время
-          </div>
-          <p className="text-2xl font-bold text-slate-900">
-            {formatDuration(progress?.elapsed_seconds ?? 0)}
-          </p>
-        </div>
-        <div className="card p-4">
-          <div className="flex items-center gap-2 text-slate-500 text-xs mb-1.5">
-            <Activity className="w-3.5 h-3.5" />
-            Соединение
-          </div>
-          <p className={`text-sm font-semibold mt-1 ${wsConnected ? 'text-green-600' : 'text-amber-500'}`}>
-            {wsConnected ? 'WebSocket' : 'Опрос'}
-          </p>
+        <div ref={logRef} className="terminal max-h-[300px] rounded-none border-0">
+          {logs.length === 0 ? (
+            <p className="text-slate-600 text-center py-4">Ожидание логов...</p>
+          ) : (
+            logs.map((line, i) => (
+              <div key={i} className={`terminal-line ${getLogLineClass(line)}`}>
+                {line}
+              </div>
+            ))
+          )}
         </div>
       </div>
 
-      {progress?.current_site && taskData?.status === 'running' && (
-        <div className="card p-4 flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-primary-50 flex items-center justify-center flex-shrink-0">
-            <Globe className="w-4 h-4 text-primary-600 animate-pulse" />
-          </div>
-          <div className="min-w-0">
-            <p className="text-xs text-slate-400 mb-0.5">Обрабатывается сейчас</p>
-            <p className="text-sm font-mono text-slate-700 truncate">{progress.current_site}</p>
-          </div>
-          <Loader2 className="w-4 h-4 text-primary-400 animate-spin flex-shrink-0 ml-auto" />
-        </div>
-      )}
-
-      {taskData?.status === 'completed' && (
-        <div className="flex items-center gap-3 p-4 bg-green-50 border border-green-200 rounded-xl text-green-700">
-          <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
-          <div>
-            <p className="font-semibold text-sm">Парсинг успешно завершён</p>
-            <p className="text-xs text-green-600">Найдено {progress?.contacts_found ?? 0} записей</p>
-          </div>
-        </div>
-      )}
-
-      {taskData?.status === 'failed' && (
-        <div className="flex items-center gap-3 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700">
-          <XCircle className="w-5 h-5 flex-shrink-0" />
-          <div>
-            <p className="font-semibold text-sm">Задача завершилась с ошибкой</p>
-            {taskData.error_message && (
-              <p className="text-xs text-red-500">{taskData.error_message}</p>
+      {/* Completed section */}
+      {isFinished && (
+        <div className="glass-card p-6">
+          <div className="flex items-center gap-3 mb-4">
+            {task?.status === 'completed' ? (
+              <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+            ) : task?.status === 'failed' ? (
+              <XCircle className="w-6 h-6 text-red-400" />
+            ) : (
+              <StopCircle className="w-6 h-6 text-slate-400" />
             )}
+            <h2 className="text-lg font-semibold text-white">
+              {task?.status === 'completed' ? 'Задача завершена' :
+                task?.status === 'failed' ? 'Ошибка выполнения' :
+                'Задача отменена'}
+            </h2>
           </div>
+
+          {task?.error_message && (
+            <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
+              <p className="text-sm text-red-400">{task.error_message}</p>
+            </div>
+          )}
+
+          {task?.status === 'completed' && (
+            <div className="flex flex-wrap gap-3">
+              <button
+                onClick={() => navigate(`/tasks/${taskId}/results`)}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-colors"
+              >
+                <ArrowRight className="w-4 h-4" />
+                Посмотреть результаты
+              </button>
+              <button
+                onClick={() => taskId && downloadResults(taskId)}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors"
+              >
+                <Download className="w-4 h-4" />
+                Скачать Excel
+              </button>
+              <button
+                onClick={() => taskId && downloadLogs(taskId)}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-slate-400 border border-slate-700 hover:bg-slate-800/50 transition-colors"
+              >
+                <FileText className="w-4 h-4" />
+                Скачать логи
+              </button>
+            </div>
+          )}
         </div>
       )}
+    </div>
+  )
+}
 
-      <div className="flex items-center gap-3 flex-wrap">
-        {!isFinished && (
-          <button
-            type="button"
-            onClick={handleCancel}
-            disabled={cancelling}
-            className="flex items-center gap-2 px-4 py-2 border border-red-200 text-red-600 hover:bg-red-50 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-          >
-            <StopCircle className="w-4 h-4" />
-            {cancelConfirm ? 'Подтвердить отмену' : 'Отменить задачу'}
-          </button>
-        )}
-        {cancelConfirm && (
-          <button
-            type="button"
-            onClick={() => setCancelConfirm(false)}
-            className="px-4 py-2 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-lg text-sm font-medium transition-colors"
-          >
-            Не отменять
-          </button>
-        )}
-        {isFinished && taskData?.status === 'completed' && (
-          <button
-            type="button"
-            onClick={onCompleted}
-            className="flex items-center gap-2 px-5 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-semibold transition-colors"
-          >
-            Посмотреть результаты →
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => navigate('/tasks')}
-          className="px-4 py-2 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-lg text-sm font-medium transition-colors"
-        >
-          Все задачи
-        </button>
+// ── Stat Card ─────────────────────────────────────────────────────────────────
+
+function StatCard({
+  icon: Icon,
+  label,
+  value,
+  color,
+}: {
+  icon: React.ElementType
+  label: string
+  value: string
+  color: string
+}) {
+  const colorMap: Record<string, string> = {
+    blue: 'text-blue-400 bg-blue-500/10',
+    green: 'text-emerald-400 bg-emerald-500/10',
+    purple: 'text-violet-400 bg-violet-500/10',
+    amber: 'text-amber-400 bg-amber-500/10',
+    red: 'text-red-400 bg-red-500/10',
+    slate: 'text-slate-400 bg-slate-500/10',
+  }
+  const c = colorMap[color] || colorMap.slate
+
+  return (
+    <div className="glass-card p-3.5">
+      <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-2 ${c}`}>
+        <Icon className="w-4 h-4" />
       </div>
+      <p className="text-lg font-bold text-white">{value}</p>
+      <p className="text-[10px] text-slate-500 mt-0.5">{label}</p>
     </div>
   )
 }

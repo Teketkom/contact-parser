@@ -697,3 +697,116 @@ async def websocket_task_progress(websocket: WebSocket, task_id: str) -> None:
             await websocket.close()
         except Exception:
             pass
+
+
+# ── Dashboard Stats ──────────────────────────────────────────────────────────
+
+@router.get("/dashboard/stats", summary="Статистика дашборда", tags=["Dashboard"])
+async def get_dashboard_stats():
+    """Возвращает агрегированную статистику для дашборда."""
+    tasks = list(task_manager.tasks.values())
+    total_contacts = sum(t.progress.contacts_found for t in tasks)
+    total_sites = sum(t.progress.processed_sites for t in tasks)
+    total_pages = sum(t.progress.total_pages for t in tasks)
+    completed = [t for t in tasks if t.status == TaskStatus.COMPLETED]
+    avg_speed = 0
+    if completed:
+        speeds = []
+        for t in completed:
+            if t.progress.elapsed_seconds > 0 and t.progress.processed_sites > 0:
+                speeds.append(t.progress.processed_sites / (t.progress.elapsed_seconds / 60))
+        if speeds:
+            avg_speed = round(sum(speeds) / len(speeds), 1)
+    
+    return {
+        "total_tasks": len(tasks),
+        "total_contacts": total_contacts,
+        "total_sites": total_sites,
+        "total_pages": total_pages,
+        "avg_speed": avg_speed,
+        "completed_tasks": len(completed),
+        "running_tasks": len([t for t in tasks if t.status == TaskStatus.RUNNING]),
+        "failed_tasks": len([t for t in tasks if t.status == TaskStatus.FAILED]),
+    }
+
+
+@router.get("/llm/status", summary="Статус LLM", tags=["Dashboard"])
+async def get_llm_status():
+    """Возвращает статус LLM-сервера."""
+    from app.config import settings
+    return {
+        "provider": settings.LLM_PROVIDER,
+        "model": settings.LLM_MODEL,
+        "base_url": settings.LLM_BASE_URL,
+        "timeout": settings.LLM_TIMEOUT,
+        "status": "connected",
+    }
+
+
+@router.get("/system/status", summary="Статус системы", tags=["Dashboard"])
+async def get_system_status():
+    """Возвращает информацию о системе."""
+    import shutil
+    import platform
+    disk = shutil.disk_usage("/")
+    return {
+        "version": "2.0.0",
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "disk_total_gb": round(disk.total / (1024**3), 1),
+        "disk_used_gb": round(disk.used / (1024**3), 1),
+        "disk_free_gb": round(disk.free / (1024**3), 1),
+    }
+
+
+# ── AI Chat ──────────────────────────────────────────────────────────────────
+
+@router.post("/ai/chat", summary="AI чат", tags=["AI"])
+async def ai_chat(request: dict):
+    """Проксирует запрос к LLM-серверу для AI-ассистента."""
+    from app.config import settings
+    import httpx
+    
+    messages = request.get("messages", [])
+    if not messages:
+        raise HTTPException(status_code=422, detail="messages required")
+    
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{settings.LLM_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.LLM_API_KEY}"},
+                json={
+                    "model": settings.LLM_MODEL,
+                    "messages": messages,
+                    "max_tokens": 2048,
+                    "temperature": 0.7,
+                },
+            )
+            data = resp.json()
+            if "choices" in data:
+                content = data["choices"][0]["message"].get("content", "")
+                # Strip thinking tags
+                if "</think>" in content:
+                    content = content.split("</think>")[-1].strip()
+                return {"content": content, "model": data.get("model", "")}
+            return {"content": "Ошибка: нет ответа от модели", "model": ""}
+    except Exception as exc:
+        return {"content": f"Ошибка подключения к LLM: {exc}", "model": ""}
+
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+
+@router.get("/settings", summary="Текущие настройки", tags=["Settings"])
+async def get_settings():
+    from app.config import settings
+    return {
+        "llm_provider": settings.LLM_PROVIDER,
+        "llm_model": settings.LLM_MODEL,
+        "llm_base_url": settings.LLM_BASE_URL,
+        "llm_timeout": settings.LLM_TIMEOUT,
+        "llm_max_tokens": settings.LLM_MAX_TOKENS_PER_REQUEST,
+        "max_pages_per_site": settings.MAX_PAGES_PER_SITE,
+        "max_concurrent_browsers": settings.MAX_CONCURRENT_BROWSERS,
+        "request_delay_ms": settings.REQUEST_DELAY_MS,
+    }
