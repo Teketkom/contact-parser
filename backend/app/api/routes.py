@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 import aiofiles
+from starlette.requests import Request
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -762,12 +763,13 @@ async def get_system_status():
 # ── AI Chat ──────────────────────────────────────────────────────────────────
 
 @router.post("/ai/chat", summary="AI чат", tags=["AI"])
-async def ai_chat(request: dict):
+async def ai_chat(request: Request):
     """Проксирует запрос к LLM-серверу для AI-ассистента."""
     from app.config import settings
     import httpx
     
-    messages = request.get("messages", [])
+    body = await request.json()
+    messages = body.get("messages", [])
     if not messages:
         raise HTTPException(status_code=422, detail="messages required")
     
@@ -807,6 +809,6 @@ async def get_settings():
         "llm_timeout": settings.LLM_TIMEOUT,
         "llm_max_tokens": settings.LLM_MAX_TOKENS_PER_REQUEST,
         "max_pages_per_site": settings.MAX_PAGES_PER_SITE,
-        "max_concurrent_browsers": settings.MAX_CONCURRENT_BROWSERS,
-        "request_delay_ms": settings.REQUEST_DELAY_MS,
+        "max_concurrent_browsers": getattr(settings, "MAX_CONCURRENT_BROWSERS", 5),
+        "request_delay_ms": getattr(settings, "REQUEST_DELAY_MS", 500),
     }
