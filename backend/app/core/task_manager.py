@@ -219,7 +219,8 @@ class TaskManager:
                             break
                         task.progress.current_page = page_url
                         try:
-                            page_contacts = await extractor.extract(
+                            # ФАЗА 1: Только regex-извлечение (быстро, без LLM)
+                            page_contacts = await extractor.extract_regex_only(
                                 html=page_html,
                                 page_url=page_url,
                                 site_url=url,
@@ -228,8 +229,6 @@ class TaskManager:
                                 language=page_lang,
                             )
                             contacts.extend(page_contacts)
-                            task.progress.llm_tokens_used = extractor.tokens_used
-                            task.progress.fallback_count = extractor.fallback_count
 
                         except Exception as page_exc:
                             msg = f"[PAGE_ERROR] {page_url}: {page_exc}"
@@ -238,8 +237,20 @@ class TaskManager:
                             task.progress.errors += 1
 
                     unique_contacts = _deduplicate_contacts(contacts)
-                    # Нормализация контактов перед экспортом
                     unique_contacts = normalize_contacts(unique_contacts)
+
+                    # ФАЗА 2: LLM нормализация ОДНИМ запросом на весь сайт
+                    if unique_contacts:
+                        try:
+                            unique_contacts = await extractor.llm_normalize_batch(
+                                contacts=unique_contacts,
+                                company_name=site_entry.company_name or "",
+                                site_url=url,
+                            )
+                            task.progress.llm_tokens_used = extractor.tokens_used
+                        except Exception as llm_exc:
+                            logger.warning("LLM нормализация не удалась для %s: %s", url, llm_exc)
+                            task.progress.fallback_count += 1
                     task.progress.contacts_found += len(unique_contacts)
                     all_results.append({
                         "site_url": url,

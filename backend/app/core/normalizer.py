@@ -327,6 +327,12 @@ def _validate_name(name: Optional[str]) -> bool:
     if re.search(r"\d", name):
         return False
 
+    # Содержит метки полей (Тел., Tel., Email и т.д.)
+    field_labels = {"тел", "тел.", "tel", "tel.", "телефон", "email", "e-mail", "факс", "fax", "адрес", "address"}
+    for word in name.lower().split():
+        if word.strip(".,;:-()") in field_labels:
+            return False
+
     # Содержит спецсимволы (кроме дефиса и точки)
     if re.search(r"[@#$%^&*=+{}\[\]<>/\\|~`]", name):
         return False

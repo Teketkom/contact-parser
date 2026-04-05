@@ -245,6 +245,11 @@ def _quick_validate_name(fio: str) -> bool:
     # Содержит цифры — не ФИО
     if any(c.isdigit() for c in fio):
         return False
+    # Содержит метки полей
+    for w in fio.lower().split():
+        wc = w.strip(".,;:-()")
+        if wc in ("тел", "tel", "телефон", "email", "e-mail", "факс", "fax", "адрес"):
+            return False
     # Последнее слово — род. падеж исторической личности (название объекта)
     fio_words = fio.lower().split()
     if fio_words and fio_words[-1].strip(".,;:-") in _GENITIVE_HISTORICAL:
@@ -1143,3 +1148,139 @@ class ContactExtractor:
             else:
                 result[network] = None
         return SocialLinks(**result)
+
+
+    async def extract_regex_only(
+        self,
+        html: str,
+        page_url: str,
+        site_url: str,
+        company_name: Optional[str] = None,
+        inn: Optional[str] = None,
+        language: str = "unknown",
+    ) -> list[ContactRecord]:
+        """
+        Извлекает контакты ТОЛЬКО regex-ом (Фаза 1 + классический экстрактор). Без LLM.
+        Быстро: ~0.1 сек на страницу.
+        """
+        if not html:
+            return []
+
+        soup = BeautifulSoup(html, "lxml")
+        for tag in soup.find_all(["script", "style", "noscript", "head"]):
+            tag.decompose()
+
+        full_text = soup.get_text(separator=" ", strip=True)
+
+        # Фаза 1: Regex предобработка
+        pre_data = self._phase1_regex_extract(full_text, html, soup, site_url, company_name, inn)
+
+        # Классический экстрактор (строит ContactRecord без LLM)
+        contacts = self._extract_classic(
+            html=html,
+            page_url=page_url,
+            site_url=site_url,
+            company_name=pre_data.get("company_name", company_name),
+            inn=pre_data.get("inn", inn),
+            language=language,
+            pre_data=pre_data,
+        )
+
+        # Фаза 3: Постобработка
+        return self._phase3_postprocess(contacts, site_url)
+
+    async def llm_normalize_batch(
+        self,
+        contacts: list[ContactRecord],
+        company_name: str,
+        site_url: str,
+    ) -> list[ContactRecord]:
+        """
+        Нормализует всю таблицу контактов ОДНИМ LLM-запросом.
+        Вызывается один раз на весь сайт после regex-извлечения.
+        """
+        if not contacts:
+            return contacts
+
+        llm = self._get_llm()
+        if not llm or not llm.is_available:
+            return contacts
+
+        # Формируем таблицу для LLM
+        rows = []
+        for i, c in enumerate(contacts):
+            rows.append(f"{i+1}. ФИО: {c.full_name or '-'} | Должность: {c.position_raw or '-'} | Email: {c.personal_email or '-'} | Тел: {c.phone or '-'}")
+
+        table_text = "\n".join(rows)
+
+        prompt_text = (
+            f"Компания: {company_name} ({site_url})\n\n"
+            "Ниже таблица контактов извлечённых regex-парсером. Для каждой строки:\n"
+            "1. Проверь ФИО — убери мусор. Если ФИО невалидно — поставь null.\n"
+            "2. Нормализуй должность — исправь регистр, убери мусор. Если невалидна — null.\n"
+            "3. Классифицируй email — личный оставь, общий (info@, pr@) перенеси в company_email.\n"
+            "4. Если знаешь реальную должность человека — заполни.\n\n"
+            'Верни ТОЛЬКО JSON массив: [{"idx": 1, "full_name": "...", "position": "...", "personal_email": "...", "company_email": "...", "phone": "..."}]\n'
+            'Мусорная строка: {"idx": N, "full_name": null}\n\n'
+            f"Таблица:\n{table_text}"
+        )
+
+        try:
+            import json as _json
+            result = await llm.extract_contacts(
+                text=prompt_text,
+                page_url=site_url,
+                target_positions=None,
+            )
+
+            # result — это dict от LLM, попробуем найти массив
+            normalized = None
+            if isinstance(result, list):
+                normalized = result
+            elif isinstance(result, dict):
+                for key in ["contacts", "data", "results", "rows"]:
+                    if key in result and isinstance(result[key], list):
+                        normalized = result[key]
+                        break
+
+            if not normalized:
+                # Try to parse from raw response
+                return contacts
+
+            # Apply LLM corrections
+            idx_map = {item.get("idx", 0): item for item in normalized if isinstance(item, dict)}
+
+            for i, contact in enumerate(contacts):
+                correction = idx_map.get(i + 1)
+                if not correction:
+                    continue
+
+                # If LLM says full_name is null — mark for removal
+                if correction.get("full_name") is None:
+                    contact.full_name = None
+                    continue
+
+                if correction.get("full_name"):
+                    contact.full_name = correction["full_name"]
+                if correction.get("position"):
+                    contact.position_normalized = correction["position"]
+                    if not contact.position_raw:
+                        contact.position_raw = correction["position"]
+                if correction.get("personal_email"):
+                    contact.personal_email = correction["personal_email"]
+                if correction.get("company_email") and not contact.company_email:
+                    contact.company_email = correction["company_email"]
+                if correction.get("phone"):
+                    contact.phone = correction["phone"]
+
+            self.tokens_used += len(prompt) // 3  # Approximate
+
+            # Remove entries where LLM set full_name to None
+            contacts = [c for c in contacts if c.full_name is not None]
+
+            return contacts
+
+        except Exception as exc:
+            logger.warning("LLM batch normalize failed: %s", exc)
+            self.fallback_count += 1
+            return contacts
