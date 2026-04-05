@@ -237,9 +237,30 @@ def _parse_sites_from_excel_or_csv(content: bytes, filename: str) -> list[SiteEn
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
-                if not line.startswith(("http://", "https://")):
-                    line = "https://" + line
-                entries.append(SiteEntry(url=line))
+                # Разделяем по запятой, точке с запятой, табуляции, пробелу+запятой
+                import re
+                parts = re.split(r'[,;	]+', line)
+                for part in parts:
+                    part = part.strip()
+                    if not part or len(part) < 4:
+                        continue
+                    # Убираем номера строк если есть (1. site.ru)
+                    part = re.sub(r'^\d+\.?\s*', '', part)
+                    if not part:
+                        continue
+                    # Извлекаем URL из строки с ; разделителями (формат: название;тип;url)
+                    if ";" in part:
+                        sub_parts = [p.strip() for p in part.split(";")]
+                        url_found = None
+                        for p in sub_parts:
+                            if p.startswith(("http://", "https://")) or ("." in p and " " not in p and len(p) > 4):
+                                url_found = p
+                                break
+                        if url_found:
+                            part = url_found
+                    if not part.startswith(("http://", "https://")):
+                        part = "https://" + part
+                    entries.append(SiteEntry(url=part))
         except Exception as exc:
             raise HTTPException(status_code=422, detail=f"Ошибка чтения TXT: {exc}")
     else:
