@@ -59,7 +59,8 @@ COLUMNS: list[dict[str, Any]] = [
     {"key": "name_patronymic",     "header": "Имя Отчество",                   "width": 25},
     {"key": "gender_ending",       "header": "Окончание (ый/ой дл.)",          "width": 16},
     {"key": "personal_email",      "header": "Личный email",                   "width": 30},
-    {"key": "phone",               "header": "Телефон",                        "width": 18},
+    {"key": "phone_mobile",        "header": "Мобильный телефон",              "width": 18},
+    {"key": "phone_city",          "header": "Городской телефон",              "width": 18},
     {"key": "inn",                 "header": "ИНН",                            "width": 14},
     {"key": "kpp",                 "header": "КПП",                            "width": 12},
     {"key": "source_url",          "header": "URL страницы-источника",         "width": 40},
@@ -98,6 +99,66 @@ def _split_fio(full_name: str) -> tuple[str, str, str]:
     return (family, name, patron)
 
 
+import re as _re_phone
+def _clean_company_name(name: str) -> str:
+    """Убирает мусор из названий компаний (заголовки страниц, навигация)."""
+    if not name:
+        return ""
+    # Убираем типичные мусорные префиксы/суффиксы от заголовков страниц
+    garbage_patterns = [
+        r"^(Управление ассортиментом|Наши новости|Статьи по|СЕМИНАР|Новости|О компании|Контакты|Главная|Каталог|Услуги)\s*[-—:«»]?\s*",
+        r"\s*[-—:]+\s*(управление|ассортимент|новости|проект|статьи|семинар).*$",
+        r"\s*[-—]\s*$",
+        r"^.*?[«»](.+?)[«»].*$",  # Извлечь текст из кавычек если есть
+    ]
+    import re
+    result = name.strip()
+    for pattern in garbage_patterns:
+        m = re.match(pattern, result, re.IGNORECASE)
+        if m and m.group(1) if m.lastindex else None:
+            result = m.group(1).strip()
+            break
+        result = re.sub(pattern, "", result, flags=re.IGNORECASE).strip()
+    # Убираем двойные пробелы и точки в конце
+    result = re.sub(r"\s+", " ", result).strip().rstrip(".-:;,")
+    return result if len(result) > 2 else name.strip()
+
+
+
+def _normalize_phone(phone: str) -> str:
+    """Нормализует телефон: оставляет только цифры. +7(499)641-04-01 → 74996410401"""
+    if not phone:
+        return ""
+    digits = _re_phone.sub(r"\D", "", phone)
+    # Если начинается с 8 и 11 цифр — заменить 8 на 7
+    if len(digits) == 11 and digits[0] == "8":
+        digits = "7" + digits[1:]
+    # Если 10 цифр — добавить 7
+    if len(digits) == 10:
+        digits = "7" + digits
+    return digits
+
+def _is_mobile(phone_digits: str) -> bool:
+    """Определяет мобильный ли номер. Мобильные: 79xx, коды 9xx."""
+    if len(phone_digits) < 11:
+        return False
+    # Код после 7: 9xx = мобильный
+    code = phone_digits[1:4]
+    return code.startswith("9")
+
+def _split_phones(phone: str) -> tuple:
+    """Разделяет телефон на мобильный и городской. Возвращает (mobile, city)."""
+    if not phone:
+        return ("", "")
+    digits = _normalize_phone(phone)
+    if not digits:
+        return ("", "")
+    if _is_mobile(digits):
+        return (digits, "")
+    else:
+        return ("", digits)
+
+
 def _detect_gender(full_name: str) -> str:
     """
     Определяет пол по окончанию отчества.
@@ -128,10 +189,10 @@ def _detect_gender(full_name: str) -> str:
 
 def _gender_ending(gender: str) -> str:
     """
-    Возвращает «ый» для мужского рода, «ой» для женского.
-    Используется для «Уважаемый» / «Уважаемой».
+    Возвращает «ый» для мужского рода, «ая» для женского.
+    Используется для «УважаемЫЙ» / «УважаемАЯ».
     """
-    return "ый" if gender == "м" else "ой"
+    return "ый" if gender == "м" else "ая"
 
 
 def _to_dative_family(family: str, gender: str) -> str:
@@ -181,24 +242,15 @@ def _to_dative_family(family: str, gender: str) -> str:
         return f
 
 
-def _to_dative(family: str, name_initial: str, patronymic_initial: str) -> str:
+def _to_dative(family: str, name_initial: str, patronymic_initial: str, gender: str = "м") -> str:
     """
     Переводит ФИО в дательный падеж формата «Фамилии И.О.».
 
-    Пример: Калашников, Д, В → «Калашникову Д.В.»
-    Инициалы остаются без изменений.
+    Пример: Калашников, Д, В, "м" → «Калашникову Д.В.»
+    Пол передаётся извне (определяется по отчеству через _detect_gender).
     """
     if not family:
         return ""
-
-    # Определяем пол по отчеству-инициалу или по самой фамилии
-    # Отчество в этой функции — уже инициал, пол надо передать извне;
-    # делаем эвристику по фамилии
-    fl = family.lower()
-    if fl.endswith(("ова", "ева", "ина", "ая", "яя", "цкая", "ская")):
-        gender = "ж"
-    else:
-        gender = "м"
 
     dative_family = _to_dative_family(family, gender)
 
@@ -276,7 +328,7 @@ def _contact_to_row(contact: ContactRecord) -> list[Any]:
     # Инициалы для дательного падежа
     name_init   = name[0]   if name   else ""
     patron_init = patron[0] if patron else ""
-    fio_dative  = _to_dative(family, name_init, patron_init)
+    fio_dative  = _to_dative(family, name_init, patron_init, gender)
 
     name_patronymic = _extract_name_patronymic(full_name)
     ending = _gender_ending(gender)
@@ -305,7 +357,8 @@ def _contact_to_row(contact: ContactRecord) -> list[Any]:
         name_patronymic,
         ending,
         contact.personal_email or "",
-        contact.phone or contact.phone_raw or "",
+        _split_phones(contact.phone or contact.phone_raw or "")[0],  # Мобильный
+        _split_phones(contact.phone or contact.phone_raw or "")[1],  # Городской
         contact.inn or "",
         contact.kpp or "",
         contact.source_url or "",
