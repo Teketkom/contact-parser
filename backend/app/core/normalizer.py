@@ -207,7 +207,7 @@ def normalize_contacts(contacts: list[ContactRecord]) -> list[ContactRecord]:
     Возвращает только качественные записи.
     """
     result: list[ContactRecord] = []
-    seen: set[str] = set()
+    seen: dict[str, int] = {}  # dedup_key -> index in result
     removed_count = 0
 
     for contact in contacts:
@@ -260,15 +260,46 @@ def normalize_contacts(contacts: list[ContactRecord]) -> list[ContactRecord]:
 
         # ── 5. Проверка ценности строки ──
         # Строка должна иметь хотя бы: ФИО + (email OR phone)
-        # ВСЕ ФИО остаются в файле, даже без контактов
-        # (для обогащения и загрузки в CRM)
-
-        # ── 6. Дедупликация ──
-        dedup_key = f"{(contact.full_name or '').lower()}|{(contact.company_name or '').lower()}"
-        if dedup_key in seen:
+        # Строка должна содержать хоть что-то полезное кроме имени
+        # (email, телефон, или должность)
+        has_useful = bool(
+            contact.personal_email or
+            contact.phone or
+            contact.position_raw or
+            contact.position_normalized or
+            contact.inn
+        )
+        if not has_useful:
             removed_count += 1
             continue
-        seen.add(dedup_key)
+
+        # ── 6. Дедупликация с мержем данных ──
+        # Если тот же человек из той же компании — объединить данные, не дублировать
+        dedup_key = f"{(contact.full_name or '').lower().strip()}|{(contact.company_name or '').lower().strip()}"
+        if dedup_key in seen:
+            # Найти существующую запись и обогатить её
+            existing_idx = seen[dedup_key]
+            existing = result[existing_idx]
+            # Заполняем пустые поля из дубля
+            if not existing.personal_email and contact.personal_email:
+                existing.personal_email = contact.personal_email
+            if not existing.company_email and contact.company_email:
+                existing.company_email = contact.company_email
+            if not existing.phone and contact.phone:
+                existing.phone = contact.phone
+            if not existing.inn and contact.inn:
+                existing.inn = contact.inn
+            if not existing.kpp and contact.kpp:
+                existing.kpp = contact.kpp
+            if not existing.position_raw and contact.position_raw:
+                existing.position_raw = contact.position_raw
+            if not existing.position_normalized and contact.position_normalized:
+                existing.position_normalized = contact.position_normalized
+            if existing.social_links is None and contact.social_links is not None:
+                existing.social_links = contact.social_links
+            removed_count += 1
+            continue
+        seen[dedup_key] = len(result)  # store index
 
         result.append(contact)
 
