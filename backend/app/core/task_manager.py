@@ -224,10 +224,14 @@ class TaskManager:
                                 html=page_html,
                                 page_url=page_url,
                                 site_url=url,
-                                company_name=site_entry.company_name,
+                                company_name=site_entry.company_name,  # Всегда берём из входного файла
                                 inn=site_entry.inn,
                                 language=page_lang,
                             )
+                            # Перезаписываем company_name из входного файла если он задан
+                            if site_entry.company_name:
+                                for pc in page_contacts:
+                                    pc.company_name = site_entry.company_name
                             contacts.extend(page_contacts)
 
                         except Exception as page_exc:
@@ -242,12 +246,15 @@ class TaskManager:
                     # ФАЗА 2: LLM нормализация ОДНИМ запросом на весь сайт
                     if unique_contacts:
                         try:
+                            tokens_before = extractor.tokens_used
                             unique_contacts = await extractor.llm_normalize_batch(
                                 contacts=unique_contacts,
                                 company_name=site_entry.company_name or "",
                                 site_url=url,
                             )
-                            task.progress.llm_tokens_used = extractor.tokens_used
+                            # Обновляем счётчик токенов
+                            task.progress.llm_tokens_used += (extractor.tokens_used - tokens_before)
+                            logger.info("LLM нормализация %s: +%d токенов", url, extractor.tokens_used - tokens_before)
                         except Exception as llm_exc:
                             logger.warning("LLM нормализация не удалась для %s: %s", url, llm_exc)
                             task.progress.fallback_count += 1

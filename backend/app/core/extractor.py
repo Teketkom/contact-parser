@@ -400,7 +400,7 @@ class ContactExtractor:
         Фаза 1: Извлекает базовые данные regex-ом.
         НЕ пытается извлечь должности или классифицировать email.
         """
-        detected_company = company_name or self._extract_company_name(soup)
+        detected_company = company_name or self._extract_company_name(soup, site_url) or site_url.split('//')[-1].split('/')[0]
         detected_inn = inn or self._extract_inn_from_text(full_text)
         detected_kpp = self._extract_kpp_from_text(full_text)
 
@@ -760,7 +760,7 @@ class ContactExtractor:
 
         full_text = soup.get_text(separator=" ", strip=True)
 
-        detected_company = company_name or self._extract_company_name(soup)
+        detected_company = company_name or self._extract_company_name(soup, site_url) or site_url.split('//')[-1].split('/')[0]
         detected_inn = inn or self._extract_inn_from_text(full_text)
         detected_kpp = pre_data.get("kpp") if pre_data else self._extract_kpp_from_text(full_text)
         company_email = pre_data.get("company_email") if pre_data else self._extract_company_email(full_text, site_url)
@@ -864,28 +864,32 @@ class ContactExtractor:
     # ── Вспомогательные методы ───────────────────────────────────────────────
 
     @staticmethod
-    def _extract_company_name(soup: BeautifulSoup) -> Optional[str]:
-        """Извлекает название компании из метатегов и заголовков страницы."""
+    def _extract_company_name(soup: BeautifulSoup, site_url: str = "") -> Optional[str]:
+        """Извлекает юридическое название компании. Приоритет: og:site_name > title domain part.
+        НЕ берём H1 и заголовки страниц — они содержат мусор ('Наша команда', 'Контакты')."""
+        # og:site_name — самый надёжный источник (имя сайта)
         og_site = soup.find("meta", property="og:site_name")
         if og_site and og_site.get("content"):
-            return str(og_site["content"]).strip()
+            name = str(og_site["content"]).strip()
+            if name and len(name) > 2:
+                return name
 
-        og_title = soup.find("meta", property="og:title")
-        if og_title and og_title.get("content"):
-            return str(og_title["content"]).strip().split("|")[0].strip()
-
+        # Попробуем title — берём ПОСЛЕДНЮЮ часть после разделителя (обычно там бренд)
         title_tag = soup.find("title")
         if title_tag:
             title = title_tag.get_text(strip=True)
-            for sep in ("|", "—", "-", "–", ":"):
-                if sep in title:
-                    return title.split(sep)[0].strip()
-            return title[:80]
+            for sep in ("|", "—", "–", "·"):
+                parts = [p.strip() for p in title.split(sep) if p.strip()]
+                if len(parts) >= 2:
+                    # Последняя часть обычно содержит название компании
+                    last = parts[-1]
+                    # Пропускаем мусорные заголовки
+                    garbage = {"главная", "контакты", "о компании", "о нас", "наша команда",
+                               "команда", "руководство", "сотрудники", "персонал", "меню"}
+                    if last.lower() not in garbage and len(last) > 3:
+                        return last
 
-        h1 = soup.find("h1")
-        if h1:
-            return h1.get_text(strip=True)[:80]
-
+        # Fallback: ничего не нашли — вернём None, чтобы использовался URL домен
         return None
 
     @staticmethod
@@ -1227,24 +1231,39 @@ class ContactExtractor:
 
         try:
             import json as _json
-            result = await llm.extract_contacts(
-                text=prompt_text,
-                page_url=site_url,
-                target_positions=None,
+            # Используем complete() напрямую, а не extract_contacts()
+            llm_provider = llm._provider
+            if llm_provider is None:
+                return contacts
+            
+            response = await llm_provider.complete(
+                system_prompt="Ты специалист по нормализации контактных данных. Отвечай ТОЛЬКО JSON без markdown.",
+                user_prompt=prompt_text,
+                max_tokens=4096,
+                temperature=0.0,
             )
+            
+            # Update token count
+            self.tokens_used += (response.tokens_prompt or 0) + (response.tokens_completion or 0)
+            
+            # Parse response
+            raw_content = response.content.strip()
+            # Strip thinking tags if present
+            if "</think>" in raw_content:
+                raw_content = raw_content.split("</think>")[-1].strip()
+            
+            # Try to extract JSON array
+            import re as _re_json
+            # Look for JSON array
+            match = _re_json.search(r'\[.*?\]', raw_content, _re_json.DOTALL)
+            if match:
+                raw_content = match.group(0)
+            
+            result_list = _json.loads(raw_content) if raw_content.startswith("[") else []
 
-            # result — это dict от LLM, попробуем найти массив
-            normalized = None
-            if isinstance(result, list):
-                normalized = result
-            elif isinstance(result, dict):
-                for key in ["contacts", "data", "results", "rows"]:
-                    if key in result and isinstance(result[key], list):
-                        normalized = result[key]
-                        break
-
+            normalized = result_list if isinstance(result_list, list) else []
+            
             if not normalized:
-                # Try to parse from raw response
                 return contacts
 
             # Apply LLM corrections
