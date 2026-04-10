@@ -400,7 +400,7 @@ class ContactExtractor:
         Фаза 1: Извлекает базовые данные regex-ом.
         НЕ пытается извлечь должности или классифицировать email.
         """
-        detected_company = company_name or self._extract_company_name(soup, site_url) or site_url.split('//')[-1].split('/')[0]
+        detected_company = company_name or self._extract_company_name(soup, site_url) or ""
         detected_inn = inn or self._extract_inn_from_text(full_text)
         detected_kpp = self._extract_kpp_from_text(full_text)
 
@@ -760,7 +760,7 @@ class ContactExtractor:
 
         full_text = soup.get_text(separator=" ", strip=True)
 
-        detected_company = company_name or self._extract_company_name(soup, site_url) or site_url.split('//')[-1].split('/')[0]
+        detected_company = company_name or self._extract_company_name(soup, site_url) or ""
         detected_inn = inn or self._extract_inn_from_text(full_text)
         detected_kpp = pre_data.get("kpp") if pre_data else self._extract_kpp_from_text(full_text)
         company_email = pre_data.get("company_email") if pre_data else self._extract_company_email(full_text, site_url)
@@ -1218,14 +1218,23 @@ class ContactExtractor:
         table_text = "\n".join(rows)
 
         prompt_text = (
-            f"Компания: {company_name} ({site_url})\n\n"
-            "Ниже таблица контактов извлечённых regex-парсером. Для каждой строки:\n"
-            "1. Проверь ФИО — убери мусор. Если ФИО невалидно — поставь null.\n"
-            "2. Нормализуй должность — исправь регистр, убери мусор. Если невалидна — null.\n"
-            "3. Классифицируй email — личный оставь, общий (info@, pr@) перенеси в company_email.\n"
-            "4. Если знаешь реальную должность человека — заполни.\n\n"
-            'Верни ТОЛЬКО JSON массив: [{"idx": 1, "full_name": "...", "position": "...", "personal_email": "...", "company_email": "...", "phone": "..."}]\n'
-            'Мусорная строка: {"idx": N, "full_name": null}\n\n'
+            f"Сайт: {site_url}\n"
+            f"Компания (из входного файла): {company_name}\n\n"
+            "Ты нормализуешь таблицу контактов извлечённых парсером с сайта.\n"
+            "ПРАВИЛА:\n"
+            "1. company_name — ЮРИДИЧЕСКОЕ наименование компании (ООО, ПАО, АО, ЗАО + название). "
+            "НЕ домен сайта, НЕ заголовок страницы. Пример: ПАО ММК, ООО АЛРУД, ПАО Лукойл.\n"
+            "2. full_name — только реальные ФИО людей. Удали мусор (навигация, заголовки, города). "
+            "Если это не человек — поставь null.\n"
+            "3. position — реальная должность в компании. "
+            "НЕ дата, НЕ город, НЕ заголовок. Если не должность — поставь null.\n"
+            "4. personal_email — ТОЛЬКО личный email человека (ivan.petrov@...). "
+            "info@, pr@, support@, office@ — это company_email, НЕ личный.\n"
+            "5. phone — нормализуй: только цифры, формат 79991234567.\n"
+            "6. Если строка полностью мусорная (не человек) — верни full_name: null.\n\n"
+            'Верни ТОЛЬКО JSON массив (без markdown, без ```):\n'
+            '[{"idx": 1, "company_name": "ООО Название", "full_name": "Фамилия Имя Отчество", '
+            '"position": "Должность", "personal_email": "...", "company_email": "...", "phone": "79991234567"}]\n\n'
             f"Таблица:\n{table_text}"
         )
 
@@ -1279,6 +1288,8 @@ class ContactExtractor:
                     contact.full_name = None
                     continue
 
+                if correction.get("company_name"):
+                    contact.company_name = correction["company_name"]
                 if correction.get("full_name"):
                     contact.full_name = correction["full_name"]
                 if correction.get("position"):

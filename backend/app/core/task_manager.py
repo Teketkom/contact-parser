@@ -228,10 +228,13 @@ class TaskManager:
                                 inn=site_entry.inn,
                                 language=page_lang,
                             )
-                            # Перезаписываем company_name из входного файла если он задан
-                            if site_entry.company_name:
-                                for pc in page_contacts:
+                            # Используем company_name из входного файла
+                            # Если в файле нет — LLM нормализация определит юридическое название
+                            for pc in page_contacts:
+                                if site_entry.company_name:
                                     pc.company_name = site_entry.company_name
+                                elif not pc.company_name or len(pc.company_name) < 3:
+                                    pc.company_name = ""  # LLM заполнит
                             contacts.extend(page_contacts)
 
                         except Exception as page_exc:
@@ -243,21 +246,29 @@ class TaskManager:
                     unique_contacts = _deduplicate_contacts(contacts)
                     unique_contacts = normalize_contacts(unique_contacts)
 
-                    # ФАЗА 2: LLM нормализация ОДНИМ запросом на весь сайт
+                    # ФАЗА 2: LLM нормализация ОБЯЗАТЕЛЬНА для каждого сайта
                     if unique_contacts:
-                        try:
-                            tokens_before = extractor.tokens_used
-                            unique_contacts = await extractor.llm_normalize_batch(
-                                contacts=unique_contacts,
-                                company_name=site_entry.company_name or "",
-                                site_url=url,
-                            )
-                            # Обновляем счётчик токенов
-                            task.progress.llm_tokens_used += (extractor.tokens_used - tokens_before)
-                            logger.info("LLM нормализация %s: +%d токенов", url, extractor.tokens_used - tokens_before)
-                        except Exception as llm_exc:
-                            logger.warning("LLM нормализация не удалась для %s: %s", url, llm_exc)
+                        llm_ok = False
+                        for attempt in range(3):  # 3 попытки
+                            try:
+                                tokens_before = extractor.tokens_used
+                                unique_contacts = await extractor.llm_normalize_batch(
+                                    contacts=unique_contacts,
+                                    company_name=site_entry.company_name or "",
+                                    site_url=url,
+                                )
+                                task.progress.llm_tokens_used += (extractor.tokens_used - tokens_before)
+                                logger.info("LLM нормализация %s: +%d токенов (попытка %d)", url, extractor.tokens_used - tokens_before, attempt+1)
+                                llm_ok = True
+                                break
+                            except Exception as llm_exc:
+                                logger.warning("LLM нормализация попытка %d/%d для %s: %s", attempt+1, 3, url, llm_exc)
+                                import asyncio as _aio
+                                await _aio.sleep(2 * (attempt + 1))
+                        
+                        if not llm_ok:
                             task.progress.fallback_count += 1
+                            logger.error("LLM нормализация НЕВОЗМОЖНА для %s после 3 попыток", url)
                     task.progress.contacts_found += len(unique_contacts)
                     all_results.append({
                         "site_url": url,
